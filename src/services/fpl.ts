@@ -6,6 +6,11 @@ const api = axios.create({
   headers: { "User-Agent": "FPLArena/2.0" },
 });
 
+// bootstrap-static is a large payload (~1MB) and several helpers need it.
+// Cache it briefly so a burst of squad loads does not refetch it each time.
+let bootstrapCache: { data: any; at: number } | null = null;
+const BOOTSTRAP_TTL_MS = 5 * 60 * 1000;
+
 export const fplService = {
   async getTeam(teamId: number) {
     try {
@@ -32,14 +37,63 @@ export const fplService = {
     return data;
   },
 
-  async getBootstrap() {
+  async getBootstrap(force = false) {
+    if (!force && bootstrapCache && Date.now() - bootstrapCache.at < BOOTSTRAP_TTL_MS) {
+      return bootstrapCache.data;
+    }
     const { data } = await api.get("/bootstrap-static/");
+    bootstrapCache = { data, at: Date.now() };
     return data;
   },
 
   async getCurrentGameweek(): Promise<number | null> {
     const b = await this.getBootstrap();
     return b.events.find((e: any) => e.is_current)?.id ?? null;
+  },
+
+  // Per-player points for a gameweek. Used to score Aside selections.
+  // Returns a map of playerId -> total points for that GW.
+  async getLiveGwPoints(gw: number): Promise<Record<number, number>> {
+    const { data } = await api.get(`/event/${gw}/live/`);
+    const out: Record<number, number> = {};
+    for (const el of data.elements || []) {
+      out[el.id] = el.stats?.total_points ?? 0;
+    }
+    return out;
+  },
+
+  // Player metadata (name, position, team) keyed by player id.
+  // element_type: 1=GK 2=DEF 3=MID 4=FWD
+  async getPlayerMap(): Promise<Record<number, any>> {
+    const b = await this.getBootstrap();
+    const teams: Record<number, string> = {};
+    for (const t of b.teams || []) teams[t.id] = t.short_name;
+    const out: Record<number, any> = {};
+    for (const e of b.elements || []) {
+      out[e.id] = {
+        id: e.id,
+        name: e.web_name,
+        position: e.element_type,
+        team: teams[e.team] || "",
+        price: e.now_cost / 10,
+      };
+    }
+    return out;
+  },
+
+  // The next gameweek that has not yet passed its deadline, with its deadline.
+  async getNextGameweek(): Promise<{ id: number; deadline: string } | null> {
+    const b = await this.getBootstrap();
+    const ev = b.events.find((e: any) => e.is_next) || b.events.find((e: any) => !e.finished);
+    return ev ? { id: ev.id, deadline: ev.deadline_time } : null;
+  },
+
+  // Has this gameweek's deadline passed? Picks only become public after it has.
+  async isDeadlinePassed(gw: number): Promise<boolean> {
+    const b = await this.getBootstrap();
+    const ev = b.events.find((e: any) => e.id === gw);
+    if (!ev) return false;
+    return new Date(ev.deadline_time).getTime() <= Date.now();
   },
 
   async isGwFinished(gw: number): Promise<boolean> {

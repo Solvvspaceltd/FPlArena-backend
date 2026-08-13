@@ -17,7 +17,17 @@ leaguesRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       },
       orderBy: { createdAt: "desc" },
     });
-    res.json(leagues.map(l => ({ ...l, entryCount: l._count.entries })));
+    // Which leagues has this user already joined?
+    const myEntries = await prisma.entry.findMany({
+      where: { userId: req.userId },
+      select: { leagueId: true },
+    });
+    const joinedIds = new Set(myEntries.map(e => e.leagueId));
+    res.json(leagues.map(l => ({
+      ...l,
+      entryCount: l._count.entries,
+      joined: joinedIds.has(l.id),
+    })));
   } catch (e) { next(e); }
 });
 

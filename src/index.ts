@@ -12,9 +12,11 @@ import { leaguesRouter } from "./routes/leagues";
 import { usersRouter } from "./routes/users";
 import { notificationsRouter } from "./routes/notifications";
 import { adminRouter } from "./routes/admin";
+import { asideRouter } from "./routes/aside";
 import { errorHandler } from "./middleware/errorHandler";
 import { setupSocket } from "./services/socket";
 import { startSyncJobs } from "./jobs/fplSync";
+import { startAsideJobs } from "./jobs/asideJobs";
 
 const app = express();
 const httpServer = createServer(app);
@@ -32,6 +34,7 @@ app.use("/api/leagues", leaguesRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/aside", asideRouter);
 
 app.get("/health", (_req, res) => res.json({
   status: "ok",
@@ -42,7 +45,10 @@ app.get("/health", (_req, res) => res.json({
 app.use(errorHandler);
 
 setupSocket(io);
-if (process.env.NODE_ENV !== "test") startSyncJobs();
+if (process.env.NODE_ENV !== "test") {
+  startSyncJobs();
+  startAsideJobs();
+}
 
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {

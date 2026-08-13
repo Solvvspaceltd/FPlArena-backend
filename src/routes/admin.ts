@@ -79,6 +79,158 @@ adminRouter.delete("/users/:id", async (req: any, res, next) => {
   } catch (e) { next(e); }
 });
 
+
+// ── Promote an existing user to admin, or demote back to player ──────────────
+adminRouter.patch("/users/:id/role", async (req: any, res, next) => {
+  try {
+    const { role } = req.body as { role: string };
+    if (!["ADMIN", "PLAYER"].includes(role)) {
+      return next(new AppError("Role must be ADMIN or PLAYER.", 400));
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return next(new AppError("User not found.", 404));
+
+    if (target.id === req.userId && role === "PLAYER") {
+      return next(new AppError("You cannot remove your own admin access.", 400));
+    }
+
+    // Never allow the last admin to be demoted.
+    if (target.role === "ADMIN" && role === "PLAYER") {
+      const adminCount = await prisma.user.count({ where: { role: "ADMIN" } });
+      if (adminCount <= 1) {
+        return next(new AppError("There must be at least one admin.", 400));
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: target.id },
+      data: { role: role as any },
+      select: { id: true, email: true, displayName: true, role: true },
+    });
+
+    res.json({
+      message:
+        role === "ADMIN"
+          ? `${updated.displayName} is now an admin.`
+          : `${updated.displayName} is now a player.`,
+      user: updated,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ── Create a league ──────────────────────────────────────────────────────────
+// An admin can only create a league using a format the scoring engine already
+// understands. The description is text users read; the format is what runs.
+const VALID_FORMATS = [
+  "SEASON_TOTAL",
+  "WEEKLY_HIGH",
+  "CAPTAIN_POINTS",
+  "TRANSFER_NET",
+  "RANK_CLIMB",
+  "NO_HITS",
+  "SEVEN_ASIDE",
+  "FIVE_ASIDE",
+];
+
+const DEFAULT_FORMATIONS: Record<string, any> = {
+  SEVEN_ASIDE: { gk: 1, def: 2, mid: 2, fwd: 2 },
+  FIVE_ASIDE: { gk: 1, def: 1, mid: 2, fwd: 1 },
+};
+
+adminRouter.post("/leagues", async (req: any, res, next) => {
+  try {
+    const {
+      name,
+      inviteCode,
+      format,
+      description,
+      prizeInfo,
+      startGameweek,
+      endGameweek,
+      payingPlaces,
+      season,
+      formationSpec,
+    } = req.body as any;
+
+    if (!name || !String(name).trim()) return next(new AppError("League name is required.", 400));
+    if (!format || !VALID_FORMATS.includes(format)) {
+      return next(new AppError("Choose a valid league format.", 400));
+    }
+
+    const start = parseInt(String(startGameweek ?? 1), 10);
+    const end = parseInt(String(endGameweek ?? 38), 10);
+    if (isNaN(start) || isNaN(end) || start < 1 || end > 38 || start > end) {
+      return next(new AppError("Gameweek range must be between 1 and 38.", 400));
+    }
+
+    const places = parseInt(String(payingPlaces ?? 1), 10);
+    if (isNaN(places) || places < 1 || places > 20) {
+      return next(new AppError("Paying places must be between 1 and 20.", 400));
+    }
+
+    // Generate a code if one was not supplied, and make sure it is unique.
+    let code = (inviteCode ? String(inviteCode) : "").trim().toUpperCase();
+    if (!code) {
+      code = "ARENA-" + Math.random().toString(36).substring(2, 8).toUpperCase();
+    }
+    if (!/^[A-Z0-9-]{4,24}$/.test(code)) {
+      return next(new AppError("Invite code must be 4-24 letters, numbers or dashes.", 400));
+    }
+    const clash = await prisma.league.findUnique({ where: { inviteCode: code } });
+    if (clash) return next(new AppError("That invite code is already in use.", 400));
+
+    const league = await prisma.league.create({
+      data: {
+        name: String(name).trim(),
+        inviteCode: code,
+        format: format as any,
+        formationSpec: formationSpec ?? DEFAULT_FORMATIONS[format] ?? undefined,
+        description: description ? String(description).trim() : null,
+        prizeInfo: prizeInfo ? String(prizeInfo).trim() : null,
+        season: season ? String(season) : "2026/27",
+        startGameweek: start,
+        endGameweek: end,
+        payingPlaces: places,
+        status: "UPCOMING",
+        createdById: req.userId,
+      },
+    });
+
+    res.status(201).json({ message: `League "${league.name}" created.`, league });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ── Update a league's status (open / activate / complete) ────────────────────
+adminRouter.patch("/leagues/:id", async (req: any, res, next) => {
+  try {
+    const { status, prizeInfo, description } = req.body as any;
+    const league = await prisma.league.findUnique({ where: { id: req.params.id } });
+    if (!league) return next(new AppError("League not found.", 404));
+
+    if (status && !["UPCOMING", "ACTIVE", "COMPLETED"].includes(status)) {
+      return next(new AppError("Invalid status.", 400));
+    }
+
+    const updated = await prisma.league.update({
+      where: { id: league.id },
+      data: {
+        ...(status ? { status: status as any } : {}),
+        ...(prizeInfo !== undefined ? { prizeInfo } : {}),
+        ...(description !== undefined ? { description } : {}),
+      },
+    });
+
+    res.json({ message: "League updated.", league: updated });
+  } catch (e) {
+    next(e);
+  }
+});
+
 // Manually trigger a score sync (useful for testing)
 adminRouter.post("/sync", async (_req, res, next) => {
   try {

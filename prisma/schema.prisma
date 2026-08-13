@@ -18,6 +18,19 @@ enum LeagueStatus {
   COMPLETED
 }
 
+// What scoring engine a league runs on. An admin can only create a league
+// using a format the app already knows how to score.
+enum LeagueFormat {
+  SEASON_TOTAL
+  WEEKLY_HIGH
+  CAPTAIN_POINTS
+  TRANSFER_NET
+  RANK_CLIMB
+  NO_HITS
+  SEVEN_ASIDE
+  FIVE_ASIDE
+}
+
 model User {
   id            String    @id @default(uuid())
   email         String    @unique
@@ -35,6 +48,8 @@ model User {
   entries       Entry[]
   notifications Notification[]
   createdLeagues League[] @relation("LeagueCreator")
+  asidePicks     AsidePick[]
+  squadSnapshots SquadSnapshot[]
   @@map("users")
 }
 
@@ -43,6 +58,9 @@ model League {
   name          String
   inviteCode    String        @unique
   status        LeagueStatus  @default(UPCOMING)
+  format        LeagueFormat  @default(SEASON_TOTAL)
+  formationSpec Json?
+  payingPlaces  Int           @default(1)
   description   String?
   season        String
   startGameweek Int
@@ -54,6 +72,7 @@ model League {
   updatedAt     DateTime      @updatedAt
   entries       Entry[]
   gwScores      GwScore[]
+  asidePicks    AsidePick[]
   @@map("leagues")
 }
 
@@ -111,4 +130,41 @@ model FplSync {
   errorMessage   String?
   syncedAt       DateTime @default(now())
   @@map("fpl_syncs")
+}
+
+// A manager's confirmed FPL squad for a gameweek, captured once the FPL
+// deadline has passed and picks become public. Used as the pool a player
+// chooses their Aside team from for the FOLLOWING gameweek.
+model SquadSnapshot {
+  id        String   @id @default(uuid())
+  userId    String
+  gameweek  Int
+  picks     Json
+  fetchedAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  @@unique([userId, gameweek])
+  @@index([gameweek])
+  @@map("squad_snapshots")
+}
+
+// A player's Aside selection for one league in one gameweek.
+// Deliberately separate from Entry/GwScore so Aside scoring can never
+// interfere with season-long league scoring.
+model AsidePick {
+  id           String    @id @default(uuid())
+  userId       String
+  leagueId     String
+  gameweek     Int
+  playerIds    Json
+  score        Int       @default(0)
+  invalidCount Int       @default(0)
+  scoredAt     DateTime?
+  lockedAt     DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [userId], references: [id])
+  league       League    @relation(fields: [leagueId], references: [id])
+  @@unique([userId, leagueId, gameweek])
+  @@index([leagueId, gameweek])
+  @@map("aside_picks")
 }
