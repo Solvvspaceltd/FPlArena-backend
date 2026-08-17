@@ -2,6 +2,13 @@ import cron from "node-cron";
 import { prisma } from "../utils/prisma";
 import { fplService } from "../services/fpl";
 
+// The FPL API is unofficial and will throttle or block aggressive callers.
+// Every loop that hits it once per user must pace itself, the same way
+// fplSync does. At 500 linked users this is the difference between a
+// polite two minute pass and 500 requests in a burst.
+const FPL_CALL_DELAY_MS = 250;
+function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
 /**
  * Aside jobs run on their own schedule and write only to squad_snapshots and
  * aside_picks. They deliberately never touch Entry or GwScore, so a failure
@@ -62,6 +69,7 @@ export async function captureSquadSnapshots() {
         data: { userId: u.id, gameweek: gw, picks: picks.picks },
       });
       captured++;
+      await sleep(FPL_CALL_DELAY_MS);
     } catch (e) {
       console.error(`[aside] snapshot failed for user ${u.id}`, e);
     }
@@ -108,6 +116,7 @@ export async function scoreAsidePicks() {
         const gwPicks = await fplService.getGwPicks(teamId, gw);
         actual = new Set<number>((gwPicks?.picks || []).map((p: any) => p.element));
         actualSquadCache.set(teamId, actual);
+        await sleep(FPL_CALL_DELAY_MS);
       }
 
       const chosen = pick.playerIds as number[];
