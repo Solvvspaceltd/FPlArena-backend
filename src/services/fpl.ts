@@ -109,6 +109,31 @@ export const fplService = {
     return data;
   },
 
+  /**
+   * Player availability news straight from the official FPL data: injuries,
+   * suspensions, doubts and returns. Each element carries a `news` string and
+   * a `news_added` timestamp, so this needs no scraping or third-party feed.
+   */
+  async getPlayerNews(limit = 40) {
+    const b = await this.getBootstrap();
+    const teams: Record<number, string> = {};
+    for (const t of b.teams || []) teams[t.id] = t.short_name;
+
+    const items = (b.elements || [])
+      .filter((e: any) => e.news && e.news.trim().length > 0 && e.news_added)
+      .map((e: any) => ({
+        id: "fpl-" + e.id + "-" + e.news_added,
+        player: e.web_name,
+        team: teams[e.team] || "",
+        news: e.news.trim(),
+        chance: e.chance_of_playing_next_round,
+        at: e.news_added,
+      }))
+      .sort((a: any, b2: any) => new Date(b2.at).getTime() - new Date(a.at).getTime());
+
+    return items.slice(0, limit);
+  },
+
   async isGwFinished(gw: number): Promise<boolean> {
     const b = await this.getBootstrap();
     return b.events.find((e: any) => e.id === gw)?.data_checked ?? false;

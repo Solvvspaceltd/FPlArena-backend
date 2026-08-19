@@ -50,6 +50,7 @@ model User {
   createdLeagues League[] @relation("LeagueCreator")
   asidePicks     AsidePick[]
   squadSnapshots SquadSnapshot[]
+  posts          Post[]
   @@map("users")
 }
 
@@ -167,4 +168,19 @@ model AsidePick {
   @@unique([userId, leagueId, gameweek])
   @@index([leagueId, gameweek])
   @@map("aside_picks")
+}
+
+// Admin-written posts shown in the app's News tab alongside official FPL news.
+model Post {
+  id        String   @id @default(uuid())
+  title     String
+  body      String
+  category  String   @default("CLASHD")
+  pinned    Boolean  @default(false)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([createdAt])
+  @@map("posts")
 }
