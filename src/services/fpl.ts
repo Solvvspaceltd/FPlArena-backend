@@ -96,6 +96,18 @@ export const fplService = {
     return new Date(ev.deadline_time).getTime() <= Date.now();
   },
 
+  /**
+   * One page of a classic league's standings.
+   * results[] entries carry: entry (the Manager ID), entry_name (team name),
+   * player_name (the manager's real name).
+   */
+  async getLeagueStandings(leagueId: number, page = 1) {
+    const { data } = await api.get(
+      `/leagues-classic/${leagueId}/standings/?page_standings=${page}`
+    );
+    return data;
+  },
+
   async isGwFinished(gw: number): Promise<boolean> {
     const b = await this.getBootstrap();
     return b.events.find((e: any) => e.id === gw)?.data_checked ?? false;

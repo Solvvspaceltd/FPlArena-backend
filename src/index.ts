@@ -13,6 +13,7 @@ import { usersRouter } from "./routes/users";
 import { notificationsRouter } from "./routes/notifications";
 import { adminRouter } from "./routes/admin";
 import { asideRouter } from "./routes/aside";
+import { fplRouter } from "./routes/fpl";
 import { errorHandler } from "./middleware/errorHandler";
 import { setupSocket } from "./services/socket";
 import { startSyncJobs } from "./jobs/fplSync";
@@ -35,6 +36,7 @@ app.use("/api/users", usersRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/aside", asideRouter);
+app.use("/api/fpl", fplRouter);
 
 app.get("/health", (_req, res) => res.json({
   status: "ok",
