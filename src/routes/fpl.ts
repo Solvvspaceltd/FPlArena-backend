@@ -38,19 +38,32 @@ async function loadMembers(): Promise<Member[]> {
   const id = leagueId();
   if (!id) throw new AppError("Team lookup is not configured yet.", 503);
 
+  const seen = new Set<number>();
   const members: Member[] = [];
+
+  function add(entry: number, teamName: string, managerName: string) {
+    if (!entry || seen.has(entry)) return;
+    seen.add(entry);
+    members.push({ fplTeamId: entry, teamName: teamName || "", managerName: managerName || "" });
+  }
+
+  // Managers who have joined but are not yet in the standings live under
+  // new_entries. Before a gameweek has been scored — which includes the whole
+  // pre-season — that is where EVERY member sits, so both must be read.
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const data = await fplService.getLeagueStandings(id, page);
-    const rows = data?.standings?.results || [];
-    for (const r of rows) {
-      if (!r.entry) continue;
-      members.push({
-        fplTeamId: r.entry,
-        teamName: r.entry_name || "",
-        managerName: r.player_name || "",
-      });
+    const data = await fplService.getLeagueStandings(id, page, page);
+
+    for (const r of data?.standings?.results || []) {
+      add(r.entry, r.entry_name, r.player_name);
     }
-    if (!data?.standings?.has_next || rows.length < PAGE_SIZE) break;
+
+    for (const r of data?.new_entries?.results || []) {
+      const name = [r.player_first_name, r.player_last_name].filter(Boolean).join(" ");
+      add(r.entry, r.entry_name, name);
+    }
+
+    const more = data?.standings?.has_next || data?.new_entries?.has_next;
+    if (!more) break;
   }
 
   cache = { at: Date.now(), members };

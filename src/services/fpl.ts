@@ -101,9 +101,10 @@ export const fplService = {
    * results[] entries carry: entry (the Manager ID), entry_name (team name),
    * player_name (the manager's real name).
    */
-  async getLeagueStandings(leagueId: number, page = 1) {
+  async getLeagueStandings(leagueId: number, page = 1, newEntriesPage = 1) {
     const { data } = await api.get(
-      `/leagues-classic/${leagueId}/standings/?page_standings=${page}`
+      `/leagues-classic/${leagueId}/standings/?page_standings=${page}` +
+      `&page_new_entries=${newEntriesPage}`
     );
     return data;
   },
