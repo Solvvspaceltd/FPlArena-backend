@@ -21,19 +21,35 @@ usersRouter.get("/profile", authenticate, async (req: AuthRequest, res, next) =>
     let currentGameweek: number | null = null;
     try {
       currentGameweek = await fplService.getCurrentGameweek();
-      if (currentGameweek) {
-        const score = await prisma.gwScore.findFirst({
-          where: { gameweek: currentGameweek, entry: { userId: req.userId } },
-          orderBy: { syncedAt: "desc" },
-          select: { points: true },
-        });
-        gameweekPoints = score?.points ?? 0;
-      }
     } catch (e) {
       // FPL being unavailable must not break the profile call.
     }
 
-    res.json({ ...safe, currentGameweek, gameweekPoints });
+    // Season total from our own scores rather than the user row. FPL does not
+    // add a gameweek to its history endpoint until that gameweek is finished,
+    // so relying on it leaves the season total at zero all week while the
+    // current gameweek is being played.
+    const scores = await prisma.gwScore.findMany({
+      where: { entry: { userId: req.userId } },
+      select: { gameweek: true, points: true },
+      orderBy: { syncedAt: "desc" },
+    });
+
+    // A user in six leagues has six rows per gameweek with the same score, so
+    // take one per gameweek before summing.
+    const byGameweek = new Map<number, number>();
+    for (const row of scores) {
+      if (!byGameweek.has(row.gameweek)) byGameweek.set(row.gameweek, row.points);
+    }
+    const seasonPoints = Array.from(byGameweek.values()).reduce((a, b) => a + b, 0);
+    if (currentGameweek) gameweekPoints = byGameweek.get(currentGameweek) ?? 0;
+
+    res.json({
+      ...safe,
+      totalPoints: Math.max(safe.totalPoints || 0, seasonPoints),
+      currentGameweek,
+      gameweekPoints,
+    });
   } catch (e) { next(e); }
 });
 
