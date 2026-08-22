@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../utils/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { AppError } from "../utils/AppError";
+import { fplService } from "../services/fpl";
 
 export const usersRouter = Router();
 
@@ -11,8 +12,28 @@ usersRouter.get("/profile", authenticate, async (req: AuthRequest, res, next) =>
       where: { id: req.userId },
       include: { _count: { select: { entries: true } } },
     });
+    if (!user) return next(new AppError("User not found.", 404));
     const { passwordHash, ...safe } = user as any;
-    res.json(safe);
+
+    // The app's Home tiles need this gameweek's points, which live on gwScore
+    // rather than the user row. Without it the GW tile can only ever show zero.
+    let gameweekPoints = 0;
+    let currentGameweek: number | null = null;
+    try {
+      currentGameweek = await fplService.getCurrentGameweek();
+      if (currentGameweek) {
+        const score = await prisma.gwScore.findFirst({
+          where: { gameweek: currentGameweek, entry: { userId: req.userId } },
+          orderBy: { syncedAt: "desc" },
+          select: { points: true },
+        });
+        gameweekPoints = score?.points ?? 0;
+      }
+    } catch (e) {
+      // FPL being unavailable must not break the profile call.
+    }
+
+    res.json({ ...safe, currentGameweek, gameweekPoints });
   } catch (e) { next(e); }
 });
 
