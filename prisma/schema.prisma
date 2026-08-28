@@ -74,10 +74,20 @@ model League {
   entries       Entry[]
   gwScores      GwScore[]
   asidePicks    AsidePick[]
+  divisions     Division[]
   @@map("leagues")
 }
 
 model Entry {
+  divisionId    String?
+  division      Division?  @relation(fields: [divisionId], references: [id])
+  played        Int        @default(0)
+  won           Int        @default(0)
+  drawn         Int        @default(0)
+  lost          Int        @default(0)
+  leaguePoints  Int        @default(0)
+  homeFixtures  Fixture[]  @relation("HomeEntry")
+  awayFixtures  Fixture[]  @relation("AwayEntry")
   id           String    @id @default(uuid())
   userId       String
   leagueId     String
@@ -183,4 +193,46 @@ model Post {
   updatedAt DateTime @updatedAt
   @@index([createdAt])
   @@map("posts")
+}
+
+// A tier within a league. Tier 1 is the top division. Members play a round
+// robin against each other, then the top and bottom few move between tiers.
+model Division {
+  id            String    @id @default(uuid())
+  leagueId      String
+  league        League    @relation(fields: [leagueId], references: [id])
+  tier          Int
+  name          String
+  cycle         Int       @default(1)
+  startGameweek Int
+  endGameweek   Int
+  createdAt     DateTime  @default(now())
+  entries       Entry[]
+  fixtures      Fixture[]
+  @@unique([leagueId, tier, cycle])
+  @@index([leagueId])
+  @@map("divisions")
+}
+
+// One head to head match in one gameweek. awayEntryId is null for a bye,
+// which happens when a division has an odd number of members.
+model Fixture {
+  id           String    @id @default(uuid())
+  divisionId   String
+  division     Division  @relation(fields: [divisionId], references: [id])
+  round        Int
+  gameweek     Int
+  homeEntryId  String
+  homeEntry    Entry     @relation("HomeEntry", fields: [homeEntryId], references: [id])
+  awayEntryId  String?
+  awayEntry    Entry?    @relation("AwayEntry", fields: [awayEntryId], references: [id])
+  homePoints   Int?
+  awayPoints   Int?
+  settled      Boolean   @default(false)
+  settledAt    DateTime?
+  createdAt    DateTime  @default(now())
+  @@unique([divisionId, round, homeEntryId])
+  @@index([divisionId, gameweek])
+  @@index([gameweek, settled])
+  @@map("fixtures")
 }

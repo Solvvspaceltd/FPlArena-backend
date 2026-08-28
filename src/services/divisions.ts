@@ -1,0 +1,363 @@
+import { prisma } from "../utils/prisma";
+
+/**
+ * Divisions and fixtures.
+ *
+ * A league is split into tiers of roughly equal size. Within a tier everyone
+ * plays everyone once, one opponent per gameweek, three points for a win and
+ * one for a draw. At the end of a cycle the top few go up and the bottom few
+ * go down, and a fresh set of fixtures is generated.
+ *
+ * The point of this over a cumulative points table is that nobody is ever out
+ * of it. You always have a specific opponent this week, and a bad start does
+ * not remove your reason to open the app.
+ */
+
+export const TARGET_DIVISION_SIZE = 20;
+export const MIN_DIVISION_SIZE = 4;
+export const PROMOTION_PLACES = 3;
+export const RELEGATION_PLACES = 3;
+
+const TIER_NAMES = [
+  "Premier",
+  "Championship",
+  "League One",
+  "League Two",
+  "League Three",
+];
+
+export function tierName(tier: number) {
+  return TIER_NAMES[tier - 1] || `Division ${tier}`;
+}
+
+/**
+ * Round robin using the circle method. With an odd number of players a null is
+ * added, and whoever draws it that round gets a bye.
+ *
+ * Returns rounds[] where each round is an array of [home, away] pairs.
+ */
+export function roundRobin<T>(players: T[]): Array<Array<[T, T | null]>> {
+  const list: Array<T | null> = [...players];
+  if (list.length % 2 !== 0) list.push(null);
+
+  const n = list.length;
+  const rounds: Array<Array<[T, T | null]>> = [];
+
+  for (let r = 0; r < n - 1; r++) {
+    const pairs: Array<[T, T | null]> = [];
+    for (let i = 0; i < n / 2; i++) {
+      const home = list[i];
+      const away = list[n - 1 - i];
+      if (home === null && away === null) continue;
+      // Alternate home and away by round so it is not always the same way round.
+      if (home === null) {
+        pairs.push([away as T, null]);
+      } else if (away === null) {
+        pairs.push([home as T, null]);
+      } else if (r % 2 === 0) {
+        pairs.push([home as T, away as T]);
+      } else {
+        pairs.push([away as T, home as T]);
+      }
+    }
+    rounds.push(pairs);
+
+    // Rotate everything except the first element.
+    const fixed = list[0];
+    const rest = list.slice(1);
+    rest.unshift(rest.pop() as T | null);
+    list.length = 0;
+    list.push(fixed, ...rest);
+  }
+
+  return rounds;
+}
+
+/** How many tiers a league of this size should have. */
+export function divisionCountFor(memberCount: number) {
+  if (memberCount < MIN_DIVISION_SIZE) return 0;
+  return Math.max(1, Math.ceil(memberCount / TARGET_DIVISION_SIZE));
+}
+
+/**
+ * Builds divisions and a full fixture list for a league, starting at the given
+ * gameweek. Existing divisions for the same cycle are replaced.
+ *
+ * Seeding: entries are ordered by their current total points, so the strongest
+ * managers land in tier 1 on the first run. After that, promotion and
+ * relegation decide who sits where.
+ */
+export async function buildDivisions(leagueId: string, startGameweek: number, cycle = 1) {
+  const league = await prisma.league.findUnique({ where: { id: leagueId } });
+  if (!league) throw new Error("League not found.");
+
+  const entries = await prisma.entry.findMany({
+    where: { leagueId },
+    orderBy: [{ totalPoints: "desc" }, { joinedAt: "asc" }],
+    select: { id: true },
+  });
+
+  const count = divisionCountFor(entries.length);
+  if (count === 0) {
+    return { divisions: 0, fixtures: 0, reason: `Needs at least ${MIN_DIVISION_SIZE} members.` };
+  }
+
+  // Clear anything already generated for this cycle.
+  const existing = await prisma.division.findMany({
+    where: { leagueId, cycle },
+    select: { id: true },
+  });
+  if (existing.length) {
+    const ids = existing.map((d) => d.id);
+    await prisma.fixture.deleteMany({ where: { divisionId: { in: ids } } });
+    await prisma.entry.updateMany({
+      where: { divisionId: { in: ids } },
+      data: { divisionId: null },
+    });
+    await prisma.division.deleteMany({ where: { id: { in: ids } } });
+  }
+
+  const perDivision = Math.ceil(entries.length / count);
+  let totalFixtures = 0;
+
+  for (let tier = 1; tier <= count; tier++) {
+    const slice = entries.slice((tier - 1) * perDivision, tier * perDivision);
+    if (slice.length < 2) continue;
+
+    const rounds = roundRobin(slice.map((e) => e.id));
+    const endGameweek = Math.min(38, startGameweek + rounds.length - 1);
+
+    const division = await prisma.division.create({
+      data: {
+        leagueId,
+        tier,
+        name: tierName(tier),
+        cycle,
+        startGameweek,
+        endGameweek,
+      },
+    });
+
+    await prisma.entry.updateMany({
+      where: { id: { in: slice.map((e) => e.id) } },
+      data: { divisionId: division.id, played: 0, won: 0, drawn: 0, lost: 0, leaguePoints: 0 },
+    });
+
+    const rows: any[] = [];
+    rounds.forEach((pairs, idx) => {
+      const gameweek = startGameweek + idx;
+      if (gameweek > 38) return;
+      pairs.forEach(([home, away]) => {
+        rows.push({
+          divisionId: division.id,
+          round: idx + 1,
+          gameweek,
+          homeEntryId: home,
+          awayEntryId: away,
+        });
+      });
+    });
+
+    if (rows.length) {
+      await prisma.fixture.createMany({ data: rows });
+      totalFixtures += rows.length;
+    }
+  }
+
+  return { divisions: count, fixtures: totalFixtures };
+}
+
+/**
+ * Settles every unsettled fixture for a gameweek, using the scores the sync job
+ * has already written. A bye is worth a win, so nobody is punished for an odd
+ * division size.
+ */
+export async function settleFixtures(gameweek: number) {
+  const fixtures = await prisma.fixture.findMany({
+    where: { gameweek, settled: false },
+  });
+  if (!fixtures.length) return 0;
+
+  let settled = 0;
+
+  for (const f of fixtures) {
+    const [home, away] = await Promise.all([
+      prisma.gwScore.findFirst({
+        where: { entryId: f.homeEntryId, gameweek },
+        orderBy: { syncedAt: "desc" },
+        select: { points: true },
+      }),
+      f.awayEntryId
+        ? prisma.gwScore.findFirst({
+            where: { entryId: f.awayEntryId, gameweek },
+            orderBy: { syncedAt: "desc" },
+            select: { points: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    // No score yet means the gameweek has not been synced for this manager.
+    if (!home) continue;
+    if (f.awayEntryId && !away) continue;
+
+    const homePoints = home.points;
+    const awayPoints = away ? away.points : 0;
+
+    await prisma.$transaction(async (tx) => {
+      await tx.fixture.update({
+        where: { id: f.id },
+        data: { homePoints, awayPoints, settled: true, settledAt: new Date() },
+      });
+
+      if (!f.awayEntryId) {
+        // Bye: counts as a win.
+        await tx.entry.update({
+          where: { id: f.homeEntryId },
+          data: {
+            played: { increment: 1 },
+            won: { increment: 1 },
+            leaguePoints: { increment: 3 },
+          },
+        });
+        return;
+      }
+
+      const homeWin = homePoints > awayPoints;
+      const draw = homePoints === awayPoints;
+
+      await tx.entry.update({
+        where: { id: f.homeEntryId },
+        data: {
+          played: { increment: 1 },
+          won: { increment: homeWin ? 1 : 0 },
+          drawn: { increment: draw ? 1 : 0 },
+          lost: { increment: !homeWin && !draw ? 1 : 0 },
+          leaguePoints: { increment: homeWin ? 3 : draw ? 1 : 0 },
+        },
+      });
+
+      await tx.entry.update({
+        where: { id: f.awayEntryId! },
+        data: {
+          played: { increment: 1 },
+          won: { increment: !homeWin && !draw ? 1 : 0 },
+          drawn: { increment: draw ? 1 : 0 },
+          lost: { increment: homeWin ? 1 : 0 },
+          leaguePoints: { increment: !homeWin && !draw ? 3 : draw ? 1 : 0 },
+        },
+      });
+    });
+
+    settled++;
+  }
+
+  return settled;
+}
+
+/**
+ * When every fixture in a cycle is settled, move the top and bottom few between
+ * tiers and generate the next cycle's fixtures.
+ */
+export async function runPromotionRelegation(leagueId: string, nextStartGameweek: number) {
+  const divisions = await prisma.division.findMany({
+    where: { leagueId },
+    orderBy: [{ cycle: "desc" }, { tier: "asc" }],
+  });
+  if (!divisions.length) return { moved: 0 };
+
+  const cycle = divisions[0].cycle;
+  const current = divisions.filter((d) => d.cycle === cycle);
+
+  const outstanding = await prisma.fixture.count({
+    where: { divisionId: { in: current.map((d) => d.id) }, settled: false },
+  });
+  if (outstanding > 0) return { moved: 0, reason: "Cycle still in progress." };
+
+  // Standings per tier, best first.
+  const standings = await Promise.all(
+    current.map((d) =>
+      prisma.entry.findMany({
+        where: { divisionId: d.id },
+        orderBy: [{ leaguePoints: "desc" }, { totalPoints: "desc" }],
+        select: { id: true },
+      })
+    )
+  );
+
+  const order: string[] = [];
+  standings.forEach((tierEntries, i) => {
+    const up = i === 0 ? [] : tierEntries.slice(0, PROMOTION_PLACES).map((e) => e.id);
+    const down =
+      i === standings.length - 1
+        ? []
+        : tierEntries.slice(-RELEGATION_PLACES).map((e) => e.id);
+    const stay = tierEntries
+      .map((e) => e.id)
+      .filter((id) => !up.includes(id) && !down.includes(id));
+    order.push(...up, ...stay, ...down);
+  });
+
+  // buildDivisions seeds on totalPoints, so write the new order into a rank we
+  // can seed from instead: rebuild explicitly in the order worked out above.
+  await prisma.$transaction(
+    order.map((id, idx) =>
+      prisma.entry.update({ where: { id }, data: { currentRank: idx + 1 } })
+    )
+  );
+
+  await buildDivisionsFromOrder(leagueId, order, nextStartGameweek, cycle + 1);
+  return { moved: order.length, cycle: cycle + 1 };
+}
+
+/** Same as buildDivisions but with an explicit seeding order. */
+export async function buildDivisionsFromOrder(
+  leagueId: string,
+  orderedEntryIds: string[],
+  startGameweek: number,
+  cycle: number
+) {
+  const count = divisionCountFor(orderedEntryIds.length);
+  if (count === 0) return { divisions: 0, fixtures: 0 };
+
+  const perDivision = Math.ceil(orderedEntryIds.length / count);
+  let totalFixtures = 0;
+
+  for (let tier = 1; tier <= count; tier++) {
+    const slice = orderedEntryIds.slice((tier - 1) * perDivision, tier * perDivision);
+    if (slice.length < 2) continue;
+
+    const rounds = roundRobin(slice);
+    const endGameweek = Math.min(38, startGameweek + rounds.length - 1);
+
+    const division = await prisma.division.create({
+      data: { leagueId, tier, name: tierName(tier), cycle, startGameweek, endGameweek },
+    });
+
+    await prisma.entry.updateMany({
+      where: { id: { in: slice } },
+      data: { divisionId: division.id, played: 0, won: 0, drawn: 0, lost: 0, leaguePoints: 0 },
+    });
+
+    const rows: any[] = [];
+    rounds.forEach((pairs, idx) => {
+      const gameweek = startGameweek + idx;
+      if (gameweek > 38) return;
+      pairs.forEach(([home, away]) => {
+        rows.push({
+          divisionId: division.id,
+          round: idx + 1,
+          gameweek,
+          homeEntryId: home,
+          awayEntryId: away,
+        });
+      });
+    });
+
+    if (rows.length) {
+      await prisma.fixture.createMany({ data: rows });
+      totalFixtures += rows.length;
+    }
+  }
+
+  return { divisions: count, fixtures: totalFixtures };
+}

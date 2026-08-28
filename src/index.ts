@@ -15,6 +15,7 @@ import { adminRouter } from "./routes/admin";
 import { asideRouter } from "./routes/aside";
 import { fplRouter } from "./routes/fpl";
 import { newsRouter } from "./routes/news";
+import { divisionsRouter } from "./routes/divisions";
 import { errorHandler } from "./middleware/errorHandler";
 import { setupSocket } from "./services/socket";
 import { startSyncJobs } from "./jobs/fplSync";
@@ -39,6 +40,7 @@ app.use("/api/admin", adminRouter);
 app.use("/api/aside", asideRouter);
 app.use("/api/fpl", fplRouter);
 app.use("/api/news", newsRouter);
+app.use("/api/divisions", divisionsRouter);
 
 app.get("/health", (_req, res) => res.json({
   status: "ok",
