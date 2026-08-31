@@ -16,8 +16,12 @@ export const newsRouter = Router();
  */
 newsRouter.get("/", authenticate, async (_req: AuthRequest, res, next) => {
   try {
+    // Two day window: older player news is noise by the time it is read.
+    const since = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+
     const [posts, fpl] = await Promise.allSettled([
       prisma.post.findMany({
+        where: { OR: [{ pinned: true }, { createdAt: { gte: since } }] },
         orderBy: [{ pinned: "desc" }, { createdAt: "desc" }],
         take: 30,
         include: { author: { select: { displayName: true } } },
@@ -49,7 +53,7 @@ newsRouter.get("/", authenticate, async (_req: AuthRequest, res, next) => {
             chance: n.chance,
             pinned: false,
             at: n.at,
-          }))
+          })).filter((n: any) => new Date(n.at).getTime() >= since.getTime())
         : [];
 
     res.json({

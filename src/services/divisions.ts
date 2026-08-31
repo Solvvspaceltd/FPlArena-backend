@@ -246,6 +246,41 @@ export async function settleFixtures(gameweek: number) {
           leaguePoints: { increment: !homeWin && !draw ? 3 : draw ? 1 : 0 },
         },
       });
+
+      // A result each manager can see in their feed. Without this the
+      // notifications list only ever holds the welcome messages.
+      const sides = await tx.entry.findMany({
+        where: { id: { in: [f.homeEntryId, f.awayEntryId!] } },
+        include: { user: { select: { id: true, displayName: true } } },
+      });
+      const home = sides.find((e) => e.id === f.homeEntryId);
+      const away = sides.find((e) => e.id === f.awayEntryId);
+
+      if (home && away) {
+        const line = (mine: number, theirs: number, opponent: string) =>
+          mine > theirs
+            ? `You beat ${opponent} ${mine} - ${theirs}.`
+            : mine < theirs
+            ? `${opponent} beat you ${theirs} - ${mine}.`
+            : `You drew ${mine} - ${theirs} with ${opponent}.`;
+
+        await tx.notification.createMany({
+          data: [
+            {
+              userId: home.user.id,
+              title: `GW${gameweek} result`,
+              body: line(homePoints, awayPoints, away.user.displayName),
+              type: "result",
+            },
+            {
+              userId: away.user.id,
+              title: `GW${gameweek} result`,
+              body: line(awayPoints, homePoints, home.user.displayName),
+              type: "result",
+            },
+          ],
+        });
+      }
     });
 
     settled++;

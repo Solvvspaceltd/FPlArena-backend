@@ -134,6 +134,12 @@ export const fplService = {
     return items.slice(0, limit);
   },
 
+  /** Every transfer a manager has made this season. */
+  async getTransfers(teamId: number) {
+    const { data } = await api.get(`/entry/${teamId}/transfers/`);
+    return data as Array<{ element_in: number; element_out: number; event: number }>;
+  },
+
   async isGwFinished(gw: number): Promise<boolean> {
     const b = await this.getBootstrap();
     return b.events.find((e: any) => e.id === gw)?.data_checked ?? false;
