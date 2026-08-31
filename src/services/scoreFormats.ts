@@ -144,9 +144,10 @@ export async function scoreForFormat(
         }
       }
 
-      // Whole number is the arrow count; the fraction breaks ties on places
-      // gained without needing a second column.
-      return arrows + Math.min(0.999, placesGained / 10000000);
+      // totalPoints is an integer column, so the tiebreak is encoded rather
+      // than fractional: arrows occupy the millions, places gained the rest.
+      // 38 arrows is 38,000,000, comfortably inside a 32 bit integer.
+      return arrows * 1000000 + Math.min(999999, Math.max(0, placesGained));
     }
 
     /**
