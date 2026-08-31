@@ -102,6 +102,20 @@ export async function scoreForFormat(
   );
 
   switch (format) {
+    /**
+     * A weekly league is not cumulative. It ranks on the most recent played
+     * gameweek only, so the table resets every week and a bad start never rules
+     * anyone out. One league can then run all season instead of needing a new
+     * one created every gameweek.
+     */
+    case "WEEKLY_HIGH": {
+      const latest = rows
+        .filter((g) => typeof g.event === "number")
+        .sort((a, b) => b.event - a.event)[0];
+      if (!latest) return 0;
+      return latest.points - (latest.event_transfers_cost || 0);
+    }
+
     /** Most points scored by captains across the range. */
     case "CAPTAIN_POINTS": {
       let total = 0;
