@@ -208,7 +208,7 @@ adminRouter.post("/leagues", async (req: any, res, next) => {
 // ── Update a league's status (open / activate / complete) ────────────────────
 adminRouter.patch("/leagues/:id", async (req: any, res, next) => {
   try {
-    const { status, prizeInfo, description } = req.body as any;
+    const { status, prizeInfo, description, name } = req.body as any;
     const league = await prisma.league.findUnique({ where: { id: req.params.id } });
     if (!league) return next(new AppError("League not found.", 404));
 
@@ -222,6 +222,7 @@ adminRouter.patch("/leagues/:id", async (req: any, res, next) => {
         ...(status ? { status: status as any } : {}),
         ...(prizeInfo !== undefined ? { prizeInfo } : {}),
         ...(description !== undefined ? { description } : {}),
+        ...(name && String(name).trim() ? { name: String(name).trim().slice(0, 80) } : {}),
       },
     });
 
@@ -232,10 +233,13 @@ adminRouter.patch("/leagues/:id", async (req: any, res, next) => {
 });
 
 // Manually trigger a score sync (useful for testing)
+// Trigger a real score sync now rather than waiting for the next cron tick.
 adminRouter.post("/sync", async (_req, res, next) => {
   try {
+    const { syncScores } = await import("../jobs/fplSync");
     const { fplService } = await import("../services/fpl");
     const gw = await fplService.getCurrentGameweek();
-    res.json({ message: `Current GW: ${gw}. Sync will run on next cron tick.` });
+    await syncScores();
+    res.json({ message: `Sync complete for GW${gw}.` });
   } catch (e) { next(e); }
 });

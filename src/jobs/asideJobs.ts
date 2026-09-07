@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import { prisma } from "../utils/prisma";
 import { fplService } from "../services/fpl";
-import { settleFixtures } from "../services/divisions";
+import { settlePendingFixtures } from "../services/divisions";
 
 // The FPL API is unofficial and will throttle or block aggressive callers.
 // Every loop that hits it once per user must pace itself, the same way
@@ -40,8 +40,12 @@ export function startAsideJobs() {
     try {
       const gw = await fplService.getCurrentGameweek();
       if (!gw) return;
-      const settled = await settleFixtures(gw);
-      if (settled) console.log(`[fixtures] settled ${settled} for GW${gw}`);
+
+      // Settles any FINISHED gameweek with outstanding results, rather than the
+      // current one. A gameweek becomes current at its deadline, hours before a
+      // ball is kicked, so settling on that concluded every fixture on nil.
+      const settled = await settlePendingFixtures();
+      if (settled) console.log(`[fixtures] settled ${settled}`);
     } catch (e) {
       console.error("[fixtures] settle job failed", e);
     }

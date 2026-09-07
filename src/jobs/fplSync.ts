@@ -102,11 +102,30 @@ export async function syncScores() {
       const hist = await history(entry.user.fplTeamId);
 
       // Cumulative total, which is what a season league ranks on.
-      const cumulative = (hist?.current || []).reduce((sum: number, g: any) => {
-        if (g.event >= entry.league.startGameweek && g.event <= entry.league.endGameweek)
-          return sum + g.points - g.event_transfers_cost;
-        return sum;
-      }, 0);
+      //
+      // Built from the scores we have already stored rather than FPL's history
+      // endpoint. History only gains a gameweek once that gameweek is finished,
+      // so relying on it left league tables a day behind live play.
+      const stored = await prisma.gwScore.findMany({
+        where: {
+          entryId: entry.id,
+          gameweek: { gte: entry.league.startGameweek, lte: entry.league.endGameweek },
+        },
+        select: { gameweek: true, points: true },
+        orderBy: { syncedAt: "desc" },
+      });
+      const seen = new Map<number, number>();
+      for (const row of stored) if (!seen.has(row.gameweek)) seen.set(row.gameweek, row.points);
+      let cumulative = Array.from(seen.values()).reduce((a, b) => a + b, 0);
+
+      // Fall back to history if nothing is stored yet, so a first sync still works.
+      if (!seen.size) {
+        cumulative = (hist?.current || []).reduce((sum: number, g: any) => {
+          if (g.event >= entry.league.startGameweek && g.event <= entry.league.endGameweek)
+            return sum + g.points - g.event_transfers_cost;
+          return sum;
+        }, 0);
+      }
 
       // Bonus formats rank on something else entirely. scoreForFormat returns
       // null for the plain formats so they keep the cumulative behaviour.
@@ -121,6 +140,11 @@ export async function syncScores() {
           entry.league.endGameweek
         );
         if (special !== null) total = special;
+
+        // A weekly league ranks on this gameweek alone, and `net` is the live
+        // figure we just wrote. Using it keeps the weekly table current instead
+        // of waiting for FPL to close the gameweek out.
+        if ((entry.league as any).format === "WEEKLY_HIGH") total = net;
       } catch (e) {
         console.error(`Format scoring failed for entry ${entry.id}`, e);
       }

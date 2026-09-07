@@ -1,4 +1,5 @@
 import { prisma } from "../utils/prisma";
+import { fplService } from "./fpl";
 
 /**
  * Divisions and fixtures.
@@ -168,11 +169,48 @@ export async function buildDivisions(leagueId: string, startGameweek: number, cy
 }
 
 /**
- * Settles every unsettled fixture for a gameweek, using the scores the sync job
- * has already written. A bye is worth a win, so nobody is punished for an odd
- * division size.
+ * Settles fixtures for every gameweek that has FINISHED and still has results
+ * outstanding.
+ *
+ * This deliberately does not work from the current gameweek. A gameweek becomes
+ * "current" at its deadline, hours before a ball is kicked, so settling then
+ * concluded every fixture on nil.
  */
-export async function settleFixtures(gameweek: number) {
+export async function settlePendingFixtures() {
+  const pending = await prisma.fixture.findMany({
+    where: { settled: false },
+    select: { gameweek: true },
+    distinct: ["gameweek"],
+    orderBy: { gameweek: "asc" },
+  });
+  if (!pending.length) return 0;
+
+  let total = 0;
+  for (const row of pending) {
+    let finished = false;
+    try {
+      finished = await fplService.isGwFinished(row.gameweek);
+    } catch (e) {
+      continue; // FPL unavailable, try again next pass
+    }
+    if (!finished) continue;
+    total += await settleFixtures(row.gameweek, true);
+  }
+  return total;
+}
+
+/**
+ * Settles every unsettled fixture for one gameweek, using the scores the sync
+ * job has already written. A bye is worth a win, so nobody is punished for an
+ * odd division size.
+ */
+export async function settleFixtures(gameweek: number, force = false) {
+  // Results are only final once every match in the gameweek has been played.
+  if (!force) {
+    const finished = await fplService.isGwFinished(gameweek);
+    if (!finished) return 0;
+  }
+
   const fixtures = await prisma.fixture.findMany({
     where: { gameweek, settled: false },
   });
