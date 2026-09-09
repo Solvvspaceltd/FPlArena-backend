@@ -25,6 +25,7 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         fplTeamId: true,
         totalPoints: true,
         platformRank: true,
+        avatarId: true,
       },
     });
     if (!user) return res.status(404).json({ error: "User not found." });
@@ -45,6 +46,18 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         select: { points: true },
       });
       gameweekPoints = score?.points ?? 0;
+    }
+
+    // Highest score any Clashd player has this gameweek — a target on the Home
+    // screen. Deduped isn't needed: max is max even across duplicate rows.
+    let gameweekHigh = 0;
+    if (currentGameweek) {
+      const top = await prisma.gwScore.findFirst({
+        where: { gameweek: currentGameweek },
+        orderBy: { points: "desc" },
+        select: { points: true },
+      });
+      gameweekHigh = top?.points ?? 0;
     }
 
     // Position in every league the user is in.
@@ -191,12 +204,36 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       }
     }
 
+    // Points per gameweek for the Home stats chart. One row per gameweek.
+    const scoreRows = await prisma.gwScore.findMany({
+      where: { entry: { userId } },
+      select: { gameweek: true, points: true },
+      orderBy: { gameweek: "asc" },
+    });
+    const gwMap = new Map<number, number>();
+    for (const r of scoreRows) if (!gwMap.has(r.gameweek)) gwMap.set(r.gameweek, r.points);
+    const pointsSeries = Array.from(gwMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([gameweek, points]) => ({ gameweek, points }));
+
+    let bestGw: { gameweek: number; points: number } | null = null;
+    let worstGw: { gameweek: number; points: number } | null = null;
+    for (const pt of pointsSeries) {
+      if (!bestGw || pt.points > bestGw.points) bestGw = pt;
+      if (!worstGw || pt.points < worstGw.points) worstGw = pt;
+    }
+    const avgPoints = pointsSeries.length
+      ? Math.round(pointsSeries.reduce((a, b) => a + b.points, 0) / pointsSeries.length)
+      : 0;
+
     res.json({
       name: user.displayName,
       team: user.fplTeamName,
+      avatarId: user.avatarId,
       linked: !!user.fplTeamId,
       currentGameweek,
       gameweekPoints,
+      gameweekHigh,
       seasonPoints: user.totalPoints,
       platformRank: user.platformRank,
       rankMove,
@@ -205,6 +242,10 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         : null,
       nextFixture,
       form,
+      pointsSeries,
+      bestGw,
+      worstGw,
+      avgPoints,
       leagues: leagues.sort((a, b) => a.position - b.position),
     });
   } catch (e) {

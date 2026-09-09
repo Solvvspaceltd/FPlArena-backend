@@ -78,6 +78,25 @@ usersRouter.get("/leaderboard", authenticate, async (_req, res, next) => {
  * Removes all of the user's own data. Leagues they created are reassigned to
  * an admin so other players' competitions are not destroyed along with them.
  */
+/** Update the caller's own profile preferences (currently just the badge). */
+usersRouter.patch("/me", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    const { avatarId } = req.body as any;
+    const data: any = {};
+    if (avatarId !== undefined) data.avatarId = avatarId ? String(avatarId).slice(0, 8) : null;
+    if (!Object.keys(data).length) return res.json({ ok: true });
+
+    const user = await prisma.user.update({
+      where: { id: req.userId },
+      data,
+      select: { id: true, avatarId: true },
+    });
+    res.json({ ok: true, avatarId: user.avatarId });
+  } catch (e) {
+    next(e);
+  }
+});
+
 usersRouter.delete("/me", authenticate, async (req: AuthRequest, res, next) => {
   try {
     const userId = req.userId!;
