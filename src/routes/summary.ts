@@ -60,6 +60,13 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       gameweekHigh = top?.points ?? 0;
     }
 
+    // Did this user post the joint-highest score in the current gameweek? Drives
+    // the celebration when they open the app. Only when the gameweek has scores.
+    let isGameweekWinner = false;
+    if (currentGameweek && gameweekHigh > 0 && gameweekPoints === gameweekHigh) {
+      isGameweekWinner = true;
+    }
+
     // Position in every league the user is in.
     const entries = await prisma.entry.findMany({
       where: { userId },
@@ -71,41 +78,71 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       },
     });
 
-    const leagues = await Promise.all(
-      entries
-        .filter((e) => e.league.status !== "COMPLETED")
-        .map(async (e) => {
-          // Overall position by the league's scoring number (FPL points etc).
-          const aboveOverall = await prisma.entry.count({
-            where: { leagueId: e.leagueId, totalPoints: { gt: e.totalPoints } },
-          });
-          const total = await prisma.entry.count({ where: { leagueId: e.leagueId } });
+    const activeEntries = entries.filter((e) => e.league.status !== "COMPLETED");
+    const leagueIds = activeEntries.map((e) => e.leagueId);
+    const divisionIds = activeEntries
+      .map((e) => e.divisionId)
+      .filter((d): d is string => !!d);
 
-          // Table position within the user's division, by W/D/L league points.
-          let tablePosition: number | null = null;
-          let tableTotal: number | null = null;
-          if (e.divisionId) {
-            const aboveTable = await prisma.entry.count({
-              where: { divisionId: e.divisionId, leaguePoints: { gt: e.leaguePoints } },
-            });
-            tablePosition = aboveTable + 1;
-            tableTotal = await prisma.entry.count({ where: { divisionId: e.divisionId } });
-          }
+    // TWO bulk queries instead of four counts per league. Pull every entry in the
+    // relevant leagues and divisions once, then rank in memory. This was the main
+    // cause of the slow Home load: a user in 10 leagues fired ~40 round-trips.
+    const [leagueEntries, divisionEntries] = await Promise.all([
+      prisma.entry.findMany({
+        where: { leagueId: { in: leagueIds } },
+        select: { leagueId: true, totalPoints: true },
+      }),
+      divisionIds.length
+        ? prisma.entry.findMany({
+            where: { divisionId: { in: divisionIds } },
+            select: { divisionId: true, leaguePoints: true },
+          })
+        : Promise.resolve([] as { divisionId: string | null; leaguePoints: number }[]),
+    ]);
 
-          return {
-            leagueId: e.league.id,
-            name: e.league.name,
-            format: e.league.format,
-            position: aboveOverall + 1,     // overall / points
-            total,
-            tablePosition,                  // W/D/L table, when in a division
-            tableTotal,
-            points: e.totalPoints,
-            leaguePoints: e.leaguePoints,
-            division: e.division?.name || null,
-          };
-        })
-    );
+    // Group once.
+    const byLeague = new Map<string, number[]>();
+    for (const e of leagueEntries) {
+      if (!byLeague.has(e.leagueId)) byLeague.set(e.leagueId, []);
+      byLeague.get(e.leagueId)!.push(e.totalPoints);
+    }
+    const byDivision = new Map<string, number[]>();
+    for (const e of divisionEntries) {
+      if (!e.divisionId) continue;
+      if (!byDivision.has(e.divisionId)) byDivision.set(e.divisionId, []);
+      byDivision.get(e.divisionId)!.push(e.leaguePoints);
+    }
+
+    const leagues = activeEntries.map((e) => {
+      const pts = byLeague.get(e.leagueId) || [];
+      const total = pts.length;
+      const position = pts.filter((p) => p > e.totalPoints).length + 1;
+
+      let tablePosition: number | null = null;
+      let tableTotal: number | null = null;
+      if (e.divisionId) {
+        const lp = byDivision.get(e.divisionId) || [];
+        tableTotal = lp.length;
+        tablePosition = lp.filter((p) => p > e.leaguePoints).length + 1;
+      }
+
+      return {
+        leagueId: e.league.id,
+        name: e.league.name,
+        format: e.league.format,
+        position,
+        total,
+        tablePosition,
+        tableTotal,
+        points: e.totalPoints,
+        leaguePoints: e.leaguePoints,
+        division: e.division?.name || null,
+        // Movement vs previous rank, for the arrow indicator on Home.
+        rankDelta: (e as any).previousRank && (e as any).currentRank
+          ? (e as any).previousRank - (e as any).currentRank
+          : 0,
+      };
+    });
 
     // Best current standing, for the headline line.
     const best = leagues
@@ -234,6 +271,7 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       currentGameweek,
       gameweekPoints,
       gameweekHigh,
+      isGameweekWinner,
       seasonPoints: user.totalPoints,
       platformRank: user.platformRank,
       rankMove,
