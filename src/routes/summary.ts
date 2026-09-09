@@ -25,7 +25,6 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         fplTeamId: true,
         totalPoints: true,
         platformRank: true,
-        previousRank: true,
       },
     });
     if (!user) return res.status(404).json({ error: "User not found." });
@@ -143,10 +142,15 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         .reverse();
     }
 
-    const rankMove =
-      user.platformRank && user.previousRank
-        ? user.previousRank - user.platformRank
-        : 0;
+    // Rank movement from the user's entries, which carry previousRank. Take the
+    // largest positive swing so the Home "moved" figure is encouraging.
+    let rankMove = 0;
+    for (const e of entries) {
+      if (e.previousRank && e.currentRank) {
+        const swing = e.previousRank - e.currentRank;
+        if (swing > rankMove) rankMove = swing;
+      }
+    }
 
     res.json({
       name: user.displayName,
