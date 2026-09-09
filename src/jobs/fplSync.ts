@@ -188,11 +188,27 @@ export async function syncScores() {
 async function updateUserTotals(historyCache: Map<number, any>) {
   const users = await prisma.user.findMany({
     where: { fplTeamId: { not: null } },
-    select: { id: true, fplTeamId: true },
+    select: { id: true, fplTeamId: true, fplTeamName: true },
   });
 
   for (const u of users) {
     try {
+      // Refresh the stored team name. FPL keeps the same Manager ID when a
+      // manager renames their team, so a name saved once at link time goes
+      // stale. Cheap fetch, and only writes when it has actually changed.
+      try {
+        const team = await fplService.getTeam(u.fplTeamId!);
+        const liveName = team?.name;
+        if (liveName && liveName !== u.fplTeamName) {
+          await prisma.user.update({
+            where: { id: u.id },
+            data: { fplTeamName: liveName },
+          });
+        }
+        await sleep(250);
+      } catch (e) {
+        /* name refresh must not break totals */
+      }
       let hist = historyCache.get(u.fplTeamId!);
       if (!hist) {
         hist = await fplService.getHistory(u.fplTeamId!);

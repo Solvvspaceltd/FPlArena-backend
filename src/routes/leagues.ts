@@ -17,16 +17,35 @@ leaguesRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       },
       orderBy: { createdAt: "desc" },
     });
-    // Which leagues has this user already joined?
+    // The user's own entries, with score and division for both positions.
     const myEntries = await prisma.entry.findMany({
       where: { userId: req.userId },
-      select: { leagueId: true },
+      select: { leagueId: true, totalPoints: true, leaguePoints: true, divisionId: true },
     });
-    const joinedIds = new Set(myEntries.map(e => e.leagueId));
+    const mine = new Map(myEntries.map(e => [e.leagueId, e.totalPoints]));
+
+    // Overall (points) and table (W/D/L) position per joined league.
+    const positions = new Map<string, number>();
+    const tablePositions = new Map<string, number>();
+    for (const e of myEntries) {
+      const above = await prisma.entry.count({
+        where: { leagueId: e.leagueId, totalPoints: { gt: e.totalPoints } },
+      });
+      positions.set(e.leagueId, above + 1);
+      if (e.divisionId) {
+        const aboveTable = await prisma.entry.count({
+          where: { divisionId: e.divisionId, leaguePoints: { gt: e.leaguePoints } },
+        });
+        tablePositions.set(e.leagueId, aboveTable + 1);
+      }
+    }
+
     res.json(leagues.map(l => ({
       ...l,
       entryCount: l._count.entries,
-      joined: joinedIds.has(l.id),
+      joined: mine.has(l.id),
+      myPosition: positions.get(l.id) || null,
+      myTablePosition: tablePositions.get(l.id) || null,
     })));
   } catch (e) { next(e); }
 });

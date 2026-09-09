@@ -62,17 +62,31 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       entries
         .filter((e) => e.league.status !== "COMPLETED")
         .map(async (e) => {
-          // Rank within the league by its scoring number.
-          const above = await prisma.entry.count({
+          // Overall position by the league's scoring number (FPL points etc).
+          const aboveOverall = await prisma.entry.count({
             where: { leagueId: e.leagueId, totalPoints: { gt: e.totalPoints } },
           });
           const total = await prisma.entry.count({ where: { leagueId: e.leagueId } });
+
+          // Table position within the user's division, by W/D/L league points.
+          let tablePosition: number | null = null;
+          let tableTotal: number | null = null;
+          if (e.divisionId) {
+            const aboveTable = await prisma.entry.count({
+              where: { divisionId: e.divisionId, leaguePoints: { gt: e.leaguePoints } },
+            });
+            tablePosition = aboveTable + 1;
+            tableTotal = await prisma.entry.count({ where: { divisionId: e.divisionId } });
+          }
+
           return {
             leagueId: e.league.id,
             name: e.league.name,
             format: e.league.format,
-            position: above + 1,
+            position: aboveOverall + 1,     // overall / points
             total,
+            tablePosition,                  // W/D/L table, when in a division
+            tableTotal,
             points: e.totalPoints,
             leaguePoints: e.leaguePoints,
             division: e.division?.name || null,
@@ -106,13 +120,38 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       });
       if (fx) {
         const iAmHome = myEntryIds.includes(fx.homeEntryId);
-        const opp = iAmHome ? fx.awayEntry : fx.homeEntry;
+        const oppEntry = iAmHome ? fx.awayEntry : fx.homeEntry;
+        const oppEntryId = iAmHome ? fx.awayEntryId : fx.homeEntryId;
+
+        // Opponent's last five results in the same division.
+        let oppForm: string[] = [];
+        if (oppEntryId) {
+          const oppRecent = await prisma.fixture.findMany({
+            where: {
+              settled: true,
+              OR: [{ homeEntryId: oppEntryId }, { awayEntryId: oppEntryId }],
+            },
+            orderBy: { gameweek: "desc" },
+            take: 5,
+          });
+          oppForm = oppRecent
+            .map((f) => {
+              const home = f.homeEntryId === oppEntryId;
+              const mine2 = home ? f.homePoints ?? 0 : f.awayPoints ?? 0;
+              const theirs2 = home ? f.awayPoints ?? 0 : f.homePoints ?? 0;
+              if (f.awayEntryId === null) return "W";
+              return mine2 > theirs2 ? "W" : mine2 < theirs2 ? "L" : "D";
+            })
+            .reverse();
+        }
+
         nextFixture = {
           gameweek: fx.gameweek,
           division: fx.division?.name || null,
-          opponent: opp
-            ? opp.user.fplTeamName || opp.user.displayName
+          opponent: oppEntry
+            ? oppEntry.user.fplTeamName || oppEntry.user.displayName
             : "Bye",
+          opponentForm: oppForm,
         };
       }
     }
