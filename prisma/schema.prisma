@@ -37,6 +37,7 @@ model User {
   passwordHash  String
   displayName   String
   avatarUrl     String?
+  avatarId      String?
   role          UserRole  @default(PLAYER)
   fplTeamId     Int?      @unique
   fplTeamName   String?
