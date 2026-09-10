@@ -135,6 +135,14 @@ export const fplService = {
   },
 
   /** Every transfer a manager has made this season. */
+  /** Top managers from the global overall league (id 314), one page = 50. */
+  async getOverallTop(page = 1) {
+    const { data } = await api.get(
+      `/leagues-classic/314/standings/?page_standings=${page}`
+    );
+    return data;
+  },
+
   async getTransfers(teamId: number) {
     const { data } = await api.get(`/entry/${teamId}/transfers/`);
     return data as Array<{ element_in: number; element_out: number; event: number }>;

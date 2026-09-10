@@ -237,3 +237,14 @@ model Fixture {
   @@index([gameweek, settled])
   @@map("fixtures")
 }
+
+// The weekly "in-form 30" intelligence, computed once per gameweek and served to
+// every user. One row per gameweek holds the whole snapshot as JSON: consensus
+// ownership, most transferred in/out, and the differential of the week.
+model FormPickSnapshot {
+  id         String   @id @default(uuid())
+  gameweek   Int      @unique
+  data       Json
+  computedAt DateTime @default(now())
+  @@map("form_pick_snapshots")
+}

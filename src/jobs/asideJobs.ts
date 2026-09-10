@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { prisma } from "../utils/prisma";
 import { fplService } from "../services/fpl";
 import { settlePendingFixtures } from "../services/divisions";
+import { computeFormPicks } from "./formPicks";
 
 // The FPL API is unofficial and will throttle or block aggressive callers.
 // Every loop that hits it once per user must pace itself, the same way
@@ -48,6 +49,17 @@ export function startAsideJobs() {
       if (settled) console.log(`[fixtures] settled ${settled}`);
     } catch (e) {
       console.error("[fixtures] settle job failed", e);
+    }
+  });
+
+  // Recompute the in-form 30 intelligence once a day. It is a shared snapshot,
+  // so this runs regardless of how many users there are.
+  cron.schedule("30 6 * * *", async () => {
+    try {
+      const gw = await fplService.getCurrentGameweek();
+      if (gw) { await computeFormPicks(gw); console.log("[formPicks] recomputed for GW" + gw); }
+    } catch (e) {
+      console.error("[formPicks] failed", e);
     }
   });
 
