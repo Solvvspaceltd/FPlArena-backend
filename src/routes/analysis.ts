@@ -2,7 +2,7 @@ import { Router } from "express";
 import { prisma } from "../utils/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { fplService } from "../services/fpl";
-import { getFormPicks } from "../jobs/formPicks";
+import { getCachedFormPicks } from "../jobs/formPicks";
 
 export const analysisRouter = Router();
 
@@ -137,10 +137,78 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       /* layer 2 optional */
     }
 
-    // ---- Layer 3: the in-form 30 (shared) ----
+    // ---- Warning signs: factual red flags on the user's own squad ----
+    // No advice, no prediction — just the signals amateurs miss (a flagged /
+    // injured player especially). Facts pulled from bootstrap + the user's picks.
+    let warnings: any[] = [];
+    try {
+      const myPicks2 = await fplService.getGwPicks(user.fplTeamId, gw);
+      const boot2 = await fplService.getBootstrap();
+      const teamShort2: Record<number, string> = {};
+      for (const t of boot2.teams || []) teamShort2[t.id] = t.short_name;
+      const POS2: Record<number, string> = { 1: "GK", 2: "DEF", 3: "MID", 4: "FWD" };
+      const el2: Record<number, any> = {};
+      for (const e of boot2.elements || []) el2[e.id] = e;
+
+      for (const p of (myPicks2?.picks || [])) {
+        const e = el2[p.element];
+        if (!e) continue;
+        const flags: string[] = [];
+        let severity = 0;
+
+        // Injury / suspension / doubt — the big one beginners miss.
+        const chance = e.chance_of_playing_next_round;
+        if (e.status && e.status !== "a") {
+          if (e.status === "i") { flags.push("Injured"); severity = 3; }
+          else if (e.status === "s") { flags.push("Suspended"); severity = 3; }
+          else if (e.status === "u") { flags.push("Unavailable"); severity = 3; }
+          else if (e.status === "d") {
+            flags.push(chance != null ? "Doubtful (" + chance + "%)" : "Doubtful");
+            severity = Math.max(severity, 2);
+          }
+        }
+        if (e.news && e.news.trim() && flags.length === 0) {
+          flags.push(e.news.trim());
+          severity = Math.max(severity, 2);
+        }
+
+        // Price falling (has dropped since season start).
+        const priceDrop = (e.cost_change_start || 0) < 0;
+        if (priceDrop) {
+          flags.push("Price falling");
+          severity = Math.max(severity, 1);
+        }
+
+        // Low recent minutes / not starting.
+        if ((e.minutes || 0) > 0 && (e.starts || 0) === 0) {
+          flags.push("Not starting");
+          severity = Math.max(severity, 2);
+        }
+
+        if (flags.length) {
+          warnings.push({
+            id: p.element,
+            name: e.web_name,
+            team: teamShort2[e.team] || "",
+            position: POS2[e.element_type] || "",
+            flags,
+            severity,
+          });
+        }
+      }
+      warnings.sort((a, b) => b.severity - a.severity);
+      warnings = warnings.slice(0, 6);
+    } catch (e) {
+      /* warnings optional */
+    }
+
+    // ---- Layer 3: the in-form 30 (shared, cached only) ----
+    // Never compute inline — that's ~60 FPL calls and would block for 15s+.
+    // Serve the cached snapshot; if it's missing, kick off a background compute
+    // and return null so the screen shows "updating" instead of hanging.
     let inForm: any = null;
     try {
-      inForm = await getFormPicks(gw);
+      inForm = await getCachedFormPicks(gw);
     } catch (e) {
       /* layer 3 optional */
     }
@@ -173,6 +241,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       rating,
       pointsLeftBehind,
       rivalDiffs,
+      warnings,
       inForm,
     });
   } catch (e) {

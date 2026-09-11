@@ -149,9 +149,28 @@ export async function computeFormPicks(gameweek: number) {
   return snapshot;
 }
 
-/** Read the cached snapshot for a gameweek, computing it if missing. */
+/** Read the cached snapshot for a gameweek, computing it if missing (blocks). */
 export async function getFormPicks(gameweek: number) {
   const cached = await prisma.formPickSnapshot.findUnique({ where: { gameweek } });
   if (cached) return cached.data;
   return computeFormPicks(gameweek);
+}
+
+// Track an in-flight background compute so we don't start it twice.
+let computing = false;
+
+/**
+ * Cache-only read for request paths. Returns the cached snapshot immediately, or
+ * null while kicking off a one-off background compute. Never blocks the request.
+ */
+export async function getCachedFormPicks(gameweek: number) {
+  const cached = await prisma.formPickSnapshot.findUnique({ where: { gameweek } });
+  if (cached) return cached.data;
+  if (!computing) {
+    computing = true;
+    computeFormPicks(gameweek)
+      .catch((e) => console.error("[formPicks] background compute failed", e))
+      .finally(() => { computing = false; });
+  }
+  return null;
 }
