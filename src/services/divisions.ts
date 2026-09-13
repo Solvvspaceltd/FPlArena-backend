@@ -14,10 +14,19 @@ import { fplService } from "./fpl";
  * not remove your reason to open the app.
  */
 
-export const TARGET_DIVISION_SIZE = 20;
+// Division sizing. Target 10 per division so a league of 13 splits into a
+// Premier and a League One rather than sitting in one flat table, and so late
+// joiners have somewhere to land. Applies to imported mini-leagues too.
+export const TARGET_DIVISION_SIZE = 10;
 export const MIN_DIVISION_SIZE = 4;
-export const PROMOTION_PLACES = 3;
-export const RELEGATION_PLACES = 3;
+// Two up, two down. Three would turn over half a small division each cycle,
+// which stops rivalries forming.
+export const PROMOTION_PLACES = 2;
+export const RELEGATION_PLACES = 2;
+// Gameweeks per promotion cycle. Two weeks is only two matches, too few to
+// separate anyone fairly; six gives the table meaning and still yields five or
+// six promotion rounds across a season.
+export const CYCLE_GAMEWEEKS = 6;
 
 const TIER_NAMES = [
   "Premier",

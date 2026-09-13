@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../utils/prisma";
+import { placeUnassignedEntries } from "../services/lateJoiners";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { AppError } from "../utils/AppError";
@@ -196,3 +197,22 @@ divisionsRouter.post(
     }
   }
 );
+
+/**
+ * Place any entries that have no division yet (late joiners), and generate
+ * their fixtures. Admin only. Also runs automatically on join and daily.
+ */
+divisionsRouter.post("/:leagueId/place-joiners", authenticate, requireAdmin,
+  async (req: AuthRequest, res, next) => {
+    try {
+      const result = await placeUnassignedEntries(req.params.leagueId);
+      res.json({
+        message: result.placed
+          ? `Placed ${result.placed} late joiner(s).`
+          : "Everyone already has a division.",
+        ...result,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });

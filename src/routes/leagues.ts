@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../utils/prisma";
+import { placeUnassignedEntries } from "../services/lateJoiners";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { generateInviteCode } from "../utils/inviteCode";
@@ -102,6 +103,13 @@ leaguesRouter.post("/join", authenticate, async (req: AuthRequest, res, next) =>
     const entry = await prisma.entry.create({
       data: { userId: req.userId!, leagueId: league.id },
     });
+
+    // Place them into a division straight away, so a late joiner has fixtures
+    // from the next gameweek rather than sitting in the league unable to play.
+    // Fire and forget: a placement failure must never block the join.
+    placeUnassignedEntries(league.id).catch((e) =>
+      console.error("[divisions] placement after join failed", e)
+    );
 
     // Notify all league members
     await prisma.notification.create({

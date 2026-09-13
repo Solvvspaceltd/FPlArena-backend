@@ -1,7 +1,8 @@
 import cron from "node-cron";
 import { prisma } from "../utils/prisma";
 import { fplService } from "../services/fpl";
-import { settlePendingFixtures } from "../services/divisions";
+import { settlePendingFixtures, runPromotionRelegation } from "../services/divisions";
+import { placeAllUnassigned } from "../services/lateJoiners";
 import { computeFormPicks } from "./formPicks";
 
 // The FPL API is unofficial and will throttle or block aggressive callers.
@@ -54,6 +55,35 @@ export function startAsideJobs() {
 
   // Recompute the in-form 30 intelligence once a day. It is a shared snapshot,
   // so this runs regardless of how many users there are.
+  // Place late joiners into divisions, and advance promotion/relegation when a
+  // cycle completes. Runs daily; does nothing when there's nothing to do.
+  cron.schedule("0 7 * * *", async () => {
+    try {
+      await placeAllUnassigned();
+    } catch (e) {
+      console.error("[divisions] late-joiner sweep failed", e);
+    }
+
+    try {
+      const gw = await fplService.getCurrentGameweek();
+      if (!gw) return;
+      const leagues = await prisma.league.findMany({
+        where: { status: "ACTIVE" },
+        select: { id: true, name: true },
+      });
+      for (const l of leagues) {
+        // runPromotionRelegation is a no-op while a cycle still has unsettled
+        // fixtures, so it is safe to call every day.
+        const res = await runPromotionRelegation(l.id, gw + 1);
+        if (res.moved) {
+          console.log(`[divisions] ${l.name}: promotion/relegation, cycle ${res.cycle}`);
+        }
+      }
+    } catch (e) {
+      console.error("[divisions] promotion sweep failed", e);
+    }
+  });
+
   cron.schedule("30 6 * * *", async () => {
     try {
       const gw = await fplService.getCurrentGameweek();
