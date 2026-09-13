@@ -195,6 +195,18 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
             .reverse();
         }
 
+        // Live scores for both sides, so Home can show the head-to-head while
+        // matches are on rather than only the teams' names.
+        let oppLiveScore: number | null = null;
+        if (oppEntryId && fx.gameweek === currentGameweek) {
+          const oppScore = await prisma.gwScore.findFirst({
+            where: { gameweek: fx.gameweek, entryId: oppEntryId },
+            orderBy: { syncedAt: "desc" },
+            select: { points: true },
+          });
+          oppLiveScore = oppScore?.points ?? null;
+        }
+
         nextFixture = {
           gameweek: fx.gameweek,
           division: fx.division?.name || null,
@@ -202,6 +214,10 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
             ? oppEntry.user.fplTeamName || oppEntry.user.displayName
             : "Bye",
           opponentForm: oppForm,
+          // Only populated when the fixture is THIS gameweek and scores exist.
+          live: fx.gameweek === currentGameweek,
+          myScore: fx.gameweek === currentGameweek ? gameweekPoints : null,
+          opponentScore: oppLiveScore,
         };
       }
     }

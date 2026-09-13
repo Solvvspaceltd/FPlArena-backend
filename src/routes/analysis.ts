@@ -234,6 +234,130 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       /* rating optional */
     }
 
+
+    // ---- Chips: yours vs your rivals ----
+    // Genuinely valuable and nowhere else: knowing a rival still holds a
+    // Wildcard or Bench Boost changes how you play the run-in. Public data,
+    // but nobody surfaces it against the people you are actually playing.
+    let chips: any = null;
+    try {
+      const myHist = await fplService.getHistory(user.fplTeamId);
+      const myUsed = (myHist?.chips || []).map((c: any) => c.name);
+      const ALL_CHIPS = ["wildcard", "bboost", "3xc", "freehit"];
+      const LABEL: Record<string, string> = {
+        wildcard: "Wildcard", bboost: "Bench Boost",
+        "3xc": "Triple Captain", freehit: "Free Hit",
+      };
+
+      const rivalChips: Record<string, number> = {};
+      let rivalCount = 0;
+      const myEntryDiv = await prisma.entry.findFirst({
+        where: { userId: req.userId, divisionId: { not: null } },
+        select: { divisionId: true },
+      });
+      if (myEntryDiv?.divisionId) {
+        const rivals = await prisma.entry.findMany({
+          where: { divisionId: myEntryDiv.divisionId, userId: { not: req.userId } },
+          include: { user: { select: { fplTeamId: true } } },
+          take: 8,
+        });
+        for (const r of rivals) {
+          if (!r.user.fplTeamId) continue;
+          try {
+            const h = await fplService.getHistory(r.user.fplTeamId);
+            const used = (h?.chips || []).map((c: any) => c.name);
+            rivalCount += 1;
+            for (const c of ALL_CHIPS) {
+              if (!used.includes(c)) rivalChips[c] = (rivalChips[c] || 0) + 1;
+            }
+          } catch (e) { /* skip */ }
+        }
+      }
+
+      chips = {
+        mine: ALL_CHIPS.map((c) => ({
+          key: c, label: LABEL[c], available: !myUsed.includes(c),
+        })),
+        rivalsHolding: ALL_CHIPS.map((c) => ({
+          key: c, label: LABEL[c], count: rivalChips[c] || 0,
+        })),
+        rivalCount,
+      };
+    } catch (e) { /* optional */ }
+
+    // ---- Your captain record ----
+    // Did the armband pay? Compares what your captain returned against the best
+    // score in your own starting XI that week.
+    let captaincy: any = null;
+    try {
+      const rows = await prisma.gwScore.findMany({
+        where: { entry: { userId: req.userId }, captainPoints: { gt: 0 } },
+        select: { gameweek: true, captainPoints: true, points: true },
+        orderBy: { gameweek: "asc" },
+      });
+      const seen = new Map<number, any>();
+      for (const r of rows) if (!seen.has(r.gameweek)) seen.set(r.gameweek, r);
+      const list = Array.from(seen.values());
+      if (list.length) {
+        const total = list.reduce((a, b) => a + (b.captainPoints || 0), 0);
+        const best = list.reduce((m, r) =>
+          (r.captainPoints || 0) > (m.captainPoints || 0) ? r : m, list[0]);
+        const worst = list.reduce((m, r) =>
+          (r.captainPoints || 0) < (m.captainPoints || 0) ? r : m, list[0]);
+        captaincy = {
+          total,
+          average: Math.round(total / list.length),
+          best: { gameweek: best.gameweek, points: best.captainPoints },
+          worst: { gameweek: worst.gameweek, points: worst.captainPoints },
+          share: list.length && list.reduce((a, b) => a + b.points, 0) > 0
+            ? Math.round((total / list.reduce((a, b) => a + b.points, 0)) * 100)
+            : 0,
+        };
+      }
+    } catch (e) { /* optional */ }
+
+    // ---- Head to head record against each rival ----
+    // Only Clashd can show this: who you have actually beaten.
+    let h2h: any[] = [];
+    try {
+      const myEntries = await prisma.entry.findMany({
+        where: { userId: req.userId },
+        select: { id: true },
+      });
+      const ids = myEntries.map((e) => e.id);
+      if (ids.length) {
+        const played = await prisma.fixture.findMany({
+          where: {
+            settled: true,
+            OR: [{ homeEntryId: { in: ids } }, { awayEntryId: { in: ids } }],
+          },
+          include: {
+            homeEntry: { include: { user: { select: { displayName: true, fplTeamName: true } } } },
+            awayEntry: { include: { user: { select: { displayName: true, fplTeamName: true } } } },
+          },
+        });
+        const rec = new Map<string, any>();
+        for (const f of played) {
+          const iAmHome = ids.includes(f.homeEntryId);
+          const opp = iAmHome ? f.awayEntry : f.homeEntry;
+          if (!opp) continue;
+          const name = opp.user.fplTeamName || opp.user.displayName;
+          const mine = iAmHome ? f.homePoints ?? 0 : f.awayPoints ?? 0;
+          const theirs = iAmHome ? f.awayPoints ?? 0 : f.homePoints ?? 0;
+          const cur = rec.get(name) || { opponent: name, w: 0, d: 0, l: 0, for: 0, against: 0 };
+          if (mine > theirs) cur.w += 1;
+          else if (mine < theirs) cur.l += 1;
+          else cur.d += 1;
+          cur.for += mine;
+          cur.against += theirs;
+          rec.set(name, cur);
+        }
+        h2h = Array.from(rec.values())
+          .sort((a, b) => (b.w - b.l) - (a.w - a.l))
+          .slice(0, 8);
+      }
+    } catch (e) { /* optional */ }
+
     res.json({
       linked: true,
       ready: true,
@@ -243,6 +367,9 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       rivalDiffs,
       warnings,
       inForm,
+      chips,
+      captaincy,
+      h2h,
     });
   } catch (e) {
     next(e);
