@@ -2,7 +2,6 @@ import { prisma } from "../utils/prisma";
 import {
   tierName,
   roundRobin,
-  buildDivisions,
 } from "./divisions";
 import { fplService } from "./fpl";
 
@@ -49,12 +48,17 @@ export async function placeUnassignedEntries(leagueId: string) {
     orderBy: [{ cycle: "desc" }, { tier: "asc" }],
   });
 
-  // No divisions at all yet: this league has never been built. Build it
-  // normally instead of bolting people onto nothing.
+  // No divisions: this league does NOT run on fixtures, so there is nothing to
+  // place anyone into and we must not invent divisions for it.
+  //
+  // Only leagues where an admin has deliberately generated divisions play as a
+  // season with head-to-head fixtures. Everything else (Captain Royale, the
+  // Aside formats, Weekly Battle, No Hit Squad, Transfer Genius, Green Arrow)
+  // is scored on its own cumulative rules and must stay that way — an earlier
+  // version of this function auto-built divisions here and wrongly converted
+  // every league into a fixture competition.
   if (!divisions.length) {
-    const gw = await currentOrNextGameweek(league.startGameweek);
-    const res = await buildDivisions(leagueId, gw, 1);
-    return { placed: unassigned.length, built: true, ...res };
+    return { placed: 0, divisions: [] as string[], skipped: "not a fixture league" };
   }
 
   const cycle = divisions[0].cycle;

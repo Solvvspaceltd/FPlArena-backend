@@ -28,16 +28,26 @@ export const RELEGATION_PLACES = 2;
 // six promotion rounds across a season.
 export const CYCLE_GAMEWEEKS = 6;
 
+// The pyramid. Elite sits at the top and only opens once a league is big
+// enough to fill it without spreading everyone thin (see ELITE_MIN_MEMBERS).
 const TIER_NAMES = [
+  "Elite",
   "Premier",
   "Championship",
   "League One",
   "League Two",
-  "League Three",
 ];
 
-export function tierName(tier: number) {
-  return TIER_NAMES[tier - 1] || `Division ${tier}`;
+// Below this, a league runs without an Elite tier — the names shift up so a
+// small league is Premier / Championship rather than Elite / Premier. Four
+// managers in a division play three fixtures and then repeat, which is thin,
+// so Elite waits until there are enough people to make it mean something.
+export const ELITE_MIN_MEMBERS = 20;
+export const ELITE_SIZE = 10;
+
+export function tierName(tier: number, hasElite = true) {
+  const names = hasElite ? TIER_NAMES : TIER_NAMES.slice(1);
+  return names[tier - 1] || `Division ${tier}`;
 }
 
 /**
@@ -86,6 +96,12 @@ export function roundRobin<T>(players: T[]): Array<Array<[T, T | null]>> {
 /** How many tiers a league of this size should have. */
 export function divisionCountFor(memberCount: number) {
   if (memberCount < MIN_DIVISION_SIZE) return 0;
+  // With Elite open, it takes a fixed ELITE_SIZE off the top and the remainder
+  // splits into target-sized divisions below it.
+  if (memberCount >= ELITE_MIN_MEMBERS) {
+    const below = memberCount - ELITE_SIZE;
+    return 1 + Math.max(1, Math.ceil(below / TARGET_DIVISION_SIZE));
+  }
   return Math.max(1, Math.ceil(memberCount / TARGET_DIVISION_SIZE));
 }
 
@@ -112,6 +128,10 @@ export async function buildDivisions(leagueId: string, startGameweek: number, cy
     return { divisions: 0, fixtures: 0, reason: `Needs at least ${MIN_DIVISION_SIZE} members.` };
   }
 
+  // Elite only opens once the league is big enough to fill it without leaving
+  // the tiers below too thin to be a real competition.
+  const hasElite = entries.length >= ELITE_MIN_MEMBERS;
+
   // Clear anything already generated for this cycle.
   const existing = await prisma.division.findMany({
     where: { leagueId, cycle },
@@ -127,11 +147,22 @@ export async function buildDivisions(leagueId: string, startGameweek: number, cy
     await prisma.division.deleteMany({ where: { id: { in: ids } } });
   }
 
-  const perDivision = Math.ceil(entries.length / count);
+  // Elite is a fixed size; everyone else splits evenly below it.
+  const eliteTake = hasElite ? Math.min(ELITE_SIZE, entries.length) : 0;
+  const remaining = entries.length - eliteTake;
+  const lowerDivisions = Math.max(1, hasElite ? count - 1 : count);
+  const perDivision = Math.ceil(remaining / lowerDivisions);
   let totalFixtures = 0;
 
   for (let tier = 1; tier <= count; tier++) {
-    const slice = entries.slice((tier - 1) * perDivision, tier * perDivision);
+    let slice;
+    if (hasElite && tier === 1) {
+      slice = entries.slice(0, eliteTake);
+    } else {
+      const idx = hasElite ? tier - 2 : tier - 1;
+      slice = entries.slice(eliteTake + idx * perDivision,
+                            eliteTake + (idx + 1) * perDivision);
+    }
     if (slice.length < 2) continue;
 
     const rounds = roundRobin(slice.map((e) => e.id));
@@ -141,7 +172,7 @@ export async function buildDivisions(leagueId: string, startGameweek: number, cy
       data: {
         leagueId,
         tier,
-        name: tierName(tier),
+        name: tierName(tier, hasElite),
         cycle,
         startGameweek,
         endGameweek,
