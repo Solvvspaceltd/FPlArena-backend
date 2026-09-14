@@ -130,7 +130,8 @@ export async function bulkScoreGameweek(gameweek: number) {
     await prisma.gwScore.upsert({
       where: { entryId_gameweek: { entryId: entry.id, gameweek } },
       create: {
-        entryId: entry.id,
+        entry: { connect: { id: entry.id } },
+        league: { connect: { id: entry.league.id } },
         gameweek,
         points,
         captainPoints,

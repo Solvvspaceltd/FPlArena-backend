@@ -2,6 +2,8 @@ import { prisma } from "../utils/prisma";
 import { fplService } from "./fpl";
 import { readLeagueBulk } from "./bulkSync";
 
+const SEASON = "2026/27";
+
 /**
  * Mini-league import.
  *
@@ -67,15 +69,20 @@ export async function importMiniLeague(
 
   const currentGw = (await fplService.getCurrentGameweek()) || 1;
 
+  // A short unique code so the league behaves like any other Clashd league.
+  const inviteCode = "imp" + fplLeagueId.toString(36);
+
   const league = await prisma.league.create({
     data: {
       name: leagueName,
+      inviteCode,
+      season: SEASON,
       description: "Imported from your FPL mini-league.",
       format: "SEASON_TOTAL",
       status: "ACTIVE",
       startGameweek: currentGw,
       endGameweek: 38,
-      createdById: ownerUserId,
+      createdBy: { connect: { id: ownerUserId } },
       importedFromFplId: fplLeagueId,
       // Imported leagues are bragging rights only. Allowing a member-funded
       // prize pot would make Clashd a third-party money pool, which reopens
@@ -90,7 +97,10 @@ export async function importMiniLeague(
     const userId = knownByFplId.get(m.entry);
     if (!userId) continue;
     await prisma.entry.create({
-      data: { userId, leagueId: league.id },
+      data: {
+        user: { connect: { id: userId } },
+        league: { connect: { id: league.id } },
+      },
     });
     onClashd += 1;
   }
@@ -136,7 +146,12 @@ export async function claimPendingMemberships(userId: string, fplTeamId: number)
       where: { userId, leagueId: p.leagueId },
     });
     if (!already) {
-      await prisma.entry.create({ data: { userId, leagueId: p.leagueId } });
+      await prisma.entry.create({
+        data: {
+          user: { connect: { id: userId } },
+          league: { connect: { id: p.leagueId } },
+        },
+      });
       joined += 1;
     }
     await prisma.pendingMember.delete({ where: { id: p.id } });
