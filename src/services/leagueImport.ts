@@ -27,12 +27,52 @@ const SEASON = "2026/27";
  * consented, while still making the join seamless for them when they arrive.
  */
 
+
+/**
+ * The Clashd competition suite. Every imported group gets its own instance of
+ * all of these, scored privately among that group — this is what the import fee
+ * buys. Clashd's own public leagues are the shop window; these are the product.
+ */
+const SUITE: Array<{
+  suffix: string;
+  format: string;
+  description: string;
+  startOffset: number;
+}> = [
+  { suffix: "Season",          format: "SEASON_TOTAL",   startOffset: 0,
+    description: "Cumulative FPL points across the season." },
+  { suffix: "Premier League",  format: "SEASON_TOTAL",   startOffset: 0,
+    description: "Head to head each gameweek. Three points for a win." },
+  { suffix: "Weekly Battle",   format: "WEEKLY_HIGH",    startOffset: 0,
+    description: "Highest score this gameweek. Resets every week." },
+  { suffix: "7Aside",          format: "SEVEN_ASIDE",    startOffset: 1,
+    description: "Pick 7 of your own squad. Only they score." },
+  { suffix: "5Aside",          format: "FIVE_ASIDE",     startOffset: 1,
+    description: "Pick 5 of your own squad. Tighter, sharper." },
+  { suffix: "Captain Royale",  format: "CAPTAIN_POINTS", startOffset: 0,
+    description: "Only your captain counts." },
+  { suffix: "No Hit Squad",    format: "NO_HITS",        startOffset: 0,
+    description: "Go the season without a points hit." },
+  { suffix: "Transfer Genius", format: "TRANSFER_NET",   startOffset: 0,
+    description: "Best net return on your transfers." },
+  { suffix: "Green Arrow",     format: "RANK_CLIMB",     startOffset: 0,
+    description: "Most gameweeks where your rank improves." },
+];
+
+/** How many leagues one user may import. */
+export const MAX_IMPORTS_PER_USER = 3;
+
+/** Per-manager, per-year price in pounds. */
+export const PRICE_PER_MANAGER = 2;
+
 export type ImportResult = {
   leagueId: string;
   name: string;
   totalManagers: number;
   onClashd: number;
   pending: number;
+  competitions: number;
+  priceGbp: number;
 };
 
 /**
@@ -59,7 +99,7 @@ export async function importMiniLeague(
   });
   const knownByFplId = new Map(known.map((u) => [u.fplTeamId!, u.id]));
 
-  // 3. Create the Clashd league.
+  // 3. One import may not be repeated, and a user may only import a few.
   const existing = await prisma.league.findFirst({
     where: { importedFromFplId: fplLeagueId },
   });
@@ -67,64 +107,87 @@ export async function importMiniLeague(
     throw new Error("That league has already been imported.");
   }
 
+  const mine = await prisma.league.count({
+    where: { createdById: ownerUserId, importedFromFplId: { not: null } },
+  });
+  if (mine >= MAX_IMPORTS_PER_USER) {
+    throw new Error(
+      `You can import up to ${MAX_IMPORTS_PER_USER} leagues. Remove one first.`
+    );
+  }
+
   const currentGw = (await fplService.getCurrentGameweek()) || 1;
 
-  // A short unique code so the league behaves like any other Clashd league.
-  const inviteCode = "imp" + fplLeagueId.toString(36);
+  // 4. Create the whole Clashd suite for this group. Nine competitions, scored
+  //    privately among these managers — this is what the import fee buys.
+  const created: Array<{ id: string; name: string; format: string }> = [];
+  let primaryId = "";
 
-  const league = await prisma.league.create({
-    data: {
-      name: leagueName,
-      inviteCode,
-      season: SEASON,
-      description: "Imported from your FPL mini-league.",
-      format: "SEASON_TOTAL",
-      status: "ACTIVE",
-      startGameweek: currentGw,
-      endGameweek: 38,
-      createdBy: { connect: { id: ownerUserId } },
-      importedFromFplId: fplLeagueId,
-      // Imported leagues are bragging rights only. Allowing a member-funded
-      // prize pot would make Clashd a third-party money pool, which reopens
-      // every gambling question the free model avoids.
-      prizeInfo: null,
-    },
-  });
+  for (let i = 0; i < SUITE.length; i++) {
+    const def = SUITE[i];
+    const league = await prisma.league.create({
+      data: {
+        name: leagueName + " " + def.suffix,
+        inviteCode: "i" + fplLeagueId.toString(36) + i.toString(36),
+        season: SEASON,
+        description: def.description,
+        format: def.format as any,
+        status: "ACTIVE",
+        startGameweek: currentGw + def.startOffset,
+        endGameweek: 38,
+        createdBy: { connect: { id: ownerUserId } },
+        // Only the first carries the FPL link, so the league cannot be
+        // imported twice and we know which one is the group's home table.
+        ...(i === 0 ? { importedFromFplId: fplLeagueId } : {}),
+        // Imported leagues are bragging rights only. A member-funded pot would
+        // make Clashd a third-party money pool and reopen the gambling question.
+        prizeInfo: null,
+      },
+    });
+    created.push({ id: league.id, name: league.name, format: def.format });
+    if (i === 0) primaryId = league.id;
+  }
 
-  // 4. Add the members who are already on Clashd.
+  // 5. Add the managers who are already on Clashd to EVERY competition.
   let onClashd = 0;
   for (const m of managers) {
     const userId = knownByFplId.get(m.entry);
     if (!userId) continue;
-    await prisma.entry.create({
-      data: {
-        user: { connect: { id: userId } },
-        league: { connect: { id: league.id } },
-      },
-    });
+    for (const c of created) {
+      await prisma.entry.create({
+        data: {
+          user: { connect: { id: userId } },
+          league: { connect: { id: c.id } },
+        },
+      });
+    }
     onClashd += 1;
   }
 
-  // 5. Record the rest as PENDING — entry id only, nothing identifiable.
-  //    When one of these managers signs up and links this FPL team, they are
-  //    placed in the league automatically (see claimPendingMemberships).
+  // 6. Record the rest as PENDING against every competition — entry id only,
+  //    nothing identifiable about someone who has not signed up.
   const pendingIds = managers
     .map((m) => m.entry)
     .filter((id) => !knownByFplId.has(id));
 
   if (pendingIds.length) {
-    await prisma.pendingMember.createMany({
-      data: pendingIds.map((fplTeamId) => ({ leagueId: league.id, fplTeamId })),
-      skipDuplicates: true,
-    });
+    const rows: Array<{ leagueId: string; fplTeamId: number }> = [];
+    for (const c of created) {
+      for (const fplTeamId of pendingIds) {
+        rows.push({ leagueId: c.id, fplTeamId });
+      }
+    }
+    await prisma.pendingMember.createMany({ data: rows, skipDuplicates: true });
   }
 
   return {
-    leagueId: league.id,
+    leagueId: primaryId,
     name: leagueName,
     totalManagers: managers.length,
     onClashd,
     pending: pendingIds.length,
+    competitions: created.length,
+    priceGbp: managers.length * PRICE_PER_MANAGER,
   };
 }
 
@@ -184,4 +247,53 @@ export async function importedLeagueSummary(leagueId: string) {
     prisma.pendingMember.count({ where: { leagueId } }),
   ]);
   return { onClashd: members, notYetJoined: pending, total: members + pending };
+}
+
+/**
+ * Join every competition in an imported group from a single code.
+ *
+ * A member should enter one code and be in all nine, not join them one at a
+ * time. Codes for a group all share the same prefix, so one lookup finds the
+ * whole suite.
+ */
+export async function joinImportedSuite(userId: string, inviteCode: string) {
+  const code = String(inviteCode || "").trim().toLowerCase();
+  if (!code.startsWith("i")) return { joined: 0 };
+
+  // Group prefix is everything but the final character (the suite index).
+  const prefix = code.slice(0, -1);
+
+  const leagues = await prisma.league.findMany({
+    where: { inviteCode: { startsWith: prefix }, status: "ACTIVE" },
+    select: { id: true, name: true },
+  });
+  if (!leagues.length) return { joined: 0 };
+
+  let joined = 0;
+  for (const l of leagues) {
+    const already = await prisma.entry.findFirst({
+      where: { userId, leagueId: l.id },
+    });
+    if (already) continue;
+    await prisma.entry.create({
+      data: {
+        user: { connect: { id: userId } },
+        league: { connect: { id: l.id } },
+      },
+    });
+    joined += 1;
+  }
+
+  // Clear any pending rows for this user in that group.
+  const me = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { fplTeamId: true },
+  });
+  if (me?.fplTeamId) {
+    await prisma.pendingMember.deleteMany({
+      where: { fplTeamId: me.fplTeamId, leagueId: { in: leagues.map((l) => l.id) } },
+    });
+  }
+
+  return { joined, competitions: leagues.length };
 }

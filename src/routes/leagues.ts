@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../utils/prisma";
 import { placeUnassignedEntries } from "../services/lateJoiners";
+import { joinImportedSuite } from "../services/leagueImport";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { generateInviteCode } from "../utils/inviteCode";
@@ -90,6 +91,27 @@ leaguesRouter.post("/join", authenticate, async (req: AuthRequest, res, next) =>
 
     const user = await prisma.user.findUnique({ where: { id: req.userId } });
     if (!user?.fplTeamId) throw new AppError("Link your FPL team before joining a league");
+
+    // An imported group's code puts you into the whole Clashd suite for that
+    // group, not one table. Members enter one code and they are in all of them.
+    const raw = String(inviteCode).trim();
+    if (raw.toLowerCase().startsWith("i")) {
+      const suite = await joinImportedSuite(req.userId!, raw);
+      if (suite.joined) {
+        await prisma.notification.create({
+          data: {
+            userId: req.userId!,
+            title: "You're in",
+            body: `You joined ${suite.joined} competitions with your group. Good luck.`,
+            type: "league_update",
+          },
+        });
+        return res.status(201).json({
+          message: `Joined ${suite.joined} competitions`,
+          competitions: suite.joined,
+        });
+      }
+    }
 
     const league = await prisma.league.findUnique({ where: { inviteCode: inviteCode.toUpperCase() } });
     if (!league) throw new AppError("Invalid invite code", 404);
@@ -201,4 +223,70 @@ leaguesRouter.patch("/:id/status", authenticate, requireAdmin, async (req, res, 
     });
     res.json(league);
   } catch (e) { next(e); }
+});
+
+/**
+ * Update a league you created. Scoped ownership, not global admin: whoever
+ * imports or creates a league runs it.
+ */
+leaguesRouter.patch("/:id", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    const league = await prisma.league.findUnique({ where: { id: req.params.id } });
+    if (!league) return next(new AppError("League not found.", 404));
+
+    const me = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { role: true },
+    });
+    const isOwner = league.createdById === req.userId;
+    const isAdmin = me?.role === "ADMIN";
+    if (!isOwner && !isAdmin) {
+      return next(new AppError("Only the league owner can change this.", 403));
+    }
+
+    const { name, description, prizeInfo } = req.body as any;
+    const updated = await prisma.league.update({
+      where: { id: league.id },
+      data: {
+        ...(name && String(name).trim() ? { name: String(name).trim().slice(0, 80) } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(prizeInfo !== undefined ? { prizeInfo } : {}),
+      },
+    });
+
+    res.json({ message: "League updated.", league: updated });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/** Remove a member from a league you own. */
+leaguesRouter.delete("/:id/members/:entryId", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    const league = await prisma.league.findUnique({ where: { id: req.params.id } });
+    if (!league) return next(new AppError("League not found.", 404));
+
+    const me = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { role: true },
+    });
+    if (league.createdById !== req.userId && me?.role !== "ADMIN") {
+      return next(new AppError("Only the league owner can remove members.", 403));
+    }
+
+    const entry = await prisma.entry.findUnique({ where: { id: req.params.entryId } });
+    if (!entry || entry.leagueId !== league.id) {
+      return next(new AppError("That manager is not in this league.", 404));
+    }
+    if (entry.userId === league.createdById) {
+      return next(new AppError("The league owner cannot be removed.", 400));
+    }
+
+    await prisma.gwScore.deleteMany({ where: { entryId: entry.id } });
+    await prisma.entry.delete({ where: { id: entry.id } });
+
+    res.json({ message: "Manager removed." });
+  } catch (e) {
+    next(e);
+  }
 });
