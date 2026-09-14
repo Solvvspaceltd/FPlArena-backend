@@ -72,7 +72,7 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       where: { userId },
       include: {
         league: {
-          select: { id: true, name: true, format: true, status: true },
+          select: { id: true, name: true, format: true, status: true, importedFromFplId: true },
         },
         division: { select: { id: true, name: true } },
       },
@@ -137,6 +137,7 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         points: e.totalPoints,
         leaguePoints: e.leaguePoints,
         division: e.division?.name || null,
+        imported: !!e.league.importedFromFplId,
         // Movement vs previous rank, for the arrow indicator on Home.
         rankDelta: (e as any).previousRank && (e as any).currentRank
           ? (e as any).previousRank - (e as any).currentRank
