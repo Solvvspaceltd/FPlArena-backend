@@ -76,6 +76,8 @@ model League {
   gwScores      GwScore[]
   asidePicks    AsidePick[]
   divisions     Division[]
+  importedFromFplId Int?      @unique
+  pendingMembers PendingMember[]
   @@map("leagues")
 }
 
@@ -247,4 +249,20 @@ model FormPickSnapshot {
   data       Json
   computedAt DateTime @default(now())
   @@map("form_pick_snapshots")
+}
+
+// A manager who belongs to an imported FPL mini-league but has not joined
+// Clashd. We deliberately store ONLY their public FPL entry id — never a name,
+// team name or score — so that no identifiable information about a
+// non-consenting person is held. When they sign up and link that team they are
+// placed into the league automatically and this row is removed.
+model PendingMember {
+  id        String   @id @default(uuid())
+  leagueId  String
+  league    League   @relation(fields: [leagueId], references: [id])
+  fplTeamId Int
+  createdAt DateTime @default(now())
+  @@unique([leagueId, fplTeamId])
+  @@index([fplTeamId])
+  @@map("pending_members")
 }

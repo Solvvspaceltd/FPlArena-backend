@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { prisma } from "../utils/prisma";
 import { fplService } from "../services/fpl";
+import { claimPendingMemberships } from "../services/leagueImport";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { AppError } from "../utils/AppError";
 
@@ -63,6 +64,11 @@ authRouter.post("/link-fpl", authenticate, async (req: AuthRequest, res, next) =
         fplVerifiedAt: new Date(),
       },
     });
+
+    // Place them into any imported mini-league that was waiting for this team.
+    claimPendingMemberships(req.userId!, Number(fplTeamId)).catch((e) =>
+      console.error("[import] claiming pending memberships failed", e)
+    );
 
     res.json({ message: `Team "${team.name}" linked`, user: safe(user) });
   } catch (e) { next(e); }
