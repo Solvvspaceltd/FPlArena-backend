@@ -130,7 +130,22 @@ export async function regenerateRemainingFixtures(divisionId: string, fromGamewe
   });
 
   const league = await prisma.league.findUnique({ where: { id: division.leagueId } });
-  const endGw = league?.endGameweek || 38;
+  const leagueEnd = league?.endGameweek || 38;
+
+  // A round robin for n players needs n-1 rounds (n if odd, for byes). If the
+  // division's current cycle is too short to fit them — which happens as soon
+  // as late joiners arrive — extend it rather than silently generating nothing.
+  const playerCount = entries.length;
+  const roundsNeeded = playerCount % 2 === 0 ? playerCount - 1 : playerCount;
+  const needEnd = fromGameweek + roundsNeeded - 1;
+  const endGw = Math.min(leagueEnd, Math.max(division.endGameweek, needEnd));
+
+  if (endGw > division.endGameweek) {
+    await prisma.division.update({
+      where: { id: divisionId },
+      data: { endGameweek: endGw },
+    });
+  }
 
   // Continue round numbering after any settled fixtures, so the unique
   // (divisionId, round, homeEntryId) constraint can't collide with history.

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../utils/prisma";
-import { placeUnassignedEntries } from "../services/lateJoiners";
+import { placeUnassignedEntries, regenerateRemainingFixtures } from "../services/lateJoiners";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { AppError } from "../utils/AppError";
@@ -99,8 +99,87 @@ divisionsRouter.get("/:leagueId", authenticate, async (req: AuthRequest, res, ne
         )
       : [];
 
+    // Every division in the current cycle, so a manager can see the tier below
+    // and what they are climbing towards. A pyramid only feels like one if you
+    // can see the rest of it.
+    const allDivisions = await prisma.division.findMany({
+      where: { leagueId, cycle: division.cycle },
+      orderBy: { tier: "asc" },
+    });
+
+    const tables = await Promise.all(
+      allDivisions.map(async (d) => {
+        const rows = await prisma.entry.findMany({
+          where: { divisionId: d.id },
+          orderBy: [{ leaguePoints: "desc" }, { totalPoints: "desc" }],
+          include: { user: { select: { id: true, displayName: true, fplTeamName: true } } },
+        });
+        return {
+          id: d.id,
+          name: d.name,
+          tier: d.tier,
+          isMine: d.id === division.id,
+          standings: rows.map((e, i) => ({
+            position: i + 1,
+            entryId: e.id,
+            userId: e.user.id,
+            name: e.user.displayName,
+            team: e.user.fplTeamName,
+            played: e.played,
+            won: e.won,
+            drawn: e.drawn,
+            lost: e.lost,
+            leaguePoints: e.leaguePoints,
+            totalPoints: e.totalPoints,
+            mine: e.user.id === req.userId,
+          })),
+        };
+      })
+    );
+
+    // Promotion and relegation from the most recent completed cycle. Comparing
+    // a manager's tier now against their tier in the previous cycle tells us
+    // who went up and who went down.
+    let movements: any[] = [];
+    if (division.cycle > 1) {
+      const prev = await prisma.division.findMany({
+        where: { leagueId, cycle: division.cycle - 1 },
+        select: { id: true, tier: true },
+      });
+      const prevTierByEntryUser = new Map<string, number>();
+      for (const p of prev) {
+        const rows = await prisma.entry.findMany({
+          where: { divisionId: p.id },
+          select: { userId: true },
+        });
+        for (const r of rows) prevTierByEntryUser.set(r.userId, p.tier);
+      }
+
+      for (const d of allDivisions) {
+        const rows = await prisma.entry.findMany({
+          where: { divisionId: d.id },
+          include: { user: { select: { id: true, displayName: true, fplTeamName: true } } },
+        });
+        for (const r of rows) {
+          const was = prevTierByEntryUser.get(r.user.id);
+          if (was == null || was === d.tier) continue;
+          movements.push({
+            team: r.user.fplTeamName || r.user.displayName,
+            name: r.user.displayName,
+            // A lower tier number is higher up the pyramid.
+            direction: d.tier < was ? "promoted" : "relegated",
+            to: d.name,
+            mine: r.user.id === req.userId,
+          });
+        }
+      }
+      movements.sort((a, b) => (a.direction === "promoted" ? -1 : 1));
+    }
+
     res.json({
       available: true,
+      tables,
+      movements,
       division: {
         id: division.id,
         name: division.name,
@@ -211,6 +290,46 @@ divisionsRouter.post("/:leagueId/place-joiners", authenticate, requireAdmin,
           ? `Placed ${result.placed} late joiner(s).`
           : "Everyone already has a division.",
         ...result,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+/**
+ * Rebuild the remaining fixtures for every division in a league, from the next
+ * gameweek onwards. Settled results are preserved.
+ *
+ * Needed when a division's membership has changed since its fixtures were
+ * generated, or when a cycle has simply run out. Admin only.
+ */
+divisionsRouter.post("/:leagueId/rebuild-fixtures", authenticate, requireAdmin,
+  async (req: AuthRequest, res, next) => {
+    try {
+      const divisions = await prisma.division.findMany({
+        where: { leagueId: req.params.leagueId },
+        select: { id: true, name: true },
+      });
+      if (!divisions.length) {
+        return next(new AppError("That league has no divisions.", 404));
+      }
+
+      let gw = 1;
+      try {
+        const current = await fplService.getCurrentGameweek();
+        if (current) gw = current + 1;
+      } catch (e) { /* fall back to 1 */ }
+
+      const results: any[] = [];
+      for (const d of divisions) {
+        const made = await regenerateRemainingFixtures(d.id, gw);
+        results.push({ division: d.name, fixtures: made });
+      }
+
+      res.json({
+        message: `Rebuilt fixtures from GW${gw}.`,
+        fromGameweek: gw,
+        divisions: results,
       });
     } catch (e) {
       next(e);
