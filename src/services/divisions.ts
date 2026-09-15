@@ -23,9 +23,18 @@ export const MIN_DIVISION_SIZE = 4;
 // which stops rivalries forming.
 export const PROMOTION_PLACES = 2;
 export const RELEGATION_PLACES = 2;
-// Gameweeks per promotion cycle. Four keeps promotion near and expected
-// without being so short that one result decides it.
+// Promotion is NOT time based. A cycle ends when every division in the league
+// has settled all of its fixtures — see runPromotionRelegation — so each tier
+// plays everyone once (or twice, below) and the table is genuinely decided
+// before anyone moves. This constant is only a floor for how long a generated
+// cycle should last.
 export const CYCLE_GAMEWEEKS = 4;
+
+// A small division completes a single round robin very quickly — four players
+// take three gameweeks — which would leave them idle while a larger tier is
+// still playing. Below this size we run the round robin twice, home and away,
+// exactly as a real league would.
+export const DOUBLE_ROUND_ROBIN_BELOW = 6;
 
 // The pyramid. Elite sits at the top and only opens once a league is big
 // enough to fill it without spreading everyone thin (see ELITE_MIN_MEMBERS).
@@ -112,6 +121,21 @@ export function divisionCountFor(memberCount: number) {
  * managers land in tier 1 on the first run. After that, promotion and
  * relegation decide who sits where.
  */
+
+/**
+ * The full set of rounds a division should play. Small divisions play everyone
+ * twice, home and away, so they are not sitting idle while a bigger tier is
+ * still working through its single round robin.
+ */
+export function scheduleFor<T>(players: T[]): Array<Array<[T, T | null]>> {
+  const single = roundRobin(players);
+  if (players.length >= DOUBLE_ROUND_ROBIN_BELOW) return single;
+  const reverse = single.map((round) =>
+    round.map(([home, away]) => [away, home] as [T | null, T | null])
+  ) as Array<Array<[T, T | null]>>;
+  return single.concat(reverse);
+}
+
 export async function buildDivisions(leagueId: string, startGameweek: number, cycle = 1) {
   const league = await prisma.league.findUnique({ where: { id: leagueId } });
   if (!league) throw new Error("League not found.");
@@ -164,7 +188,7 @@ export async function buildDivisions(leagueId: string, startGameweek: number, cy
     }
     if (slice.length < 2) continue;
 
-    const rounds = roundRobin(slice.map((e) => e.id));
+    const rounds = scheduleFor(slice.map((e) => e.id));
     const endGameweek = Math.min(38, startGameweek + rounds.length - 1);
 
     const division = await prisma.division.create({
@@ -438,7 +462,7 @@ export async function buildDivisionsFromOrder(
     const slice = orderedEntryIds.slice((tier - 1) * perDivision, tier * perDivision);
     if (slice.length < 2) continue;
 
-    const rounds = roundRobin(slice);
+    const rounds = scheduleFor(slice);
     const endGameweek = Math.min(38, startGameweek + rounds.length - 1);
 
     const division = await prisma.division.create({

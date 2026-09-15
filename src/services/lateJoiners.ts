@@ -1,7 +1,8 @@
 import { prisma } from "../utils/prisma";
 import {
   tierName,
-  roundRobin,
+  scheduleFor,
+  DOUBLE_ROUND_ROBIN_BELOW,
 } from "./divisions";
 import { fplService } from "./fpl";
 
@@ -136,7 +137,9 @@ export async function regenerateRemainingFixtures(divisionId: string, fromGamewe
   // division's current cycle is too short to fit them — which happens as soon
   // as late joiners arrive — extend it rather than silently generating nothing.
   const playerCount = entries.length;
-  const roundsNeeded = playerCount % 2 === 0 ? playerCount - 1 : playerCount;
+  let roundsNeeded = playerCount % 2 === 0 ? playerCount - 1 : playerCount;
+  // Small divisions play home and away, so they need twice the room.
+  if (playerCount < DOUBLE_ROUND_ROBIN_BELOW) roundsNeeded *= 2;
   const needEnd = fromGameweek + roundsNeeded - 1;
   const endGw = Math.min(leagueEnd, Math.max(division.endGameweek, needEnd));
 
@@ -156,7 +159,7 @@ export async function regenerateRemainingFixtures(divisionId: string, fromGamewe
   });
   let roundNo = (lastSettled?.round || 0) + 1;
 
-  const rounds = roundRobin(entries.map((e) => e.id));
+  const rounds = scheduleFor(entries.map((e) => e.id));
   const rows: any[] = [];
   let gw = fromGameweek;
 
