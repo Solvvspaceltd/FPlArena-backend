@@ -23,10 +23,9 @@ export const MIN_DIVISION_SIZE = 4;
 // which stops rivalries forming.
 export const PROMOTION_PLACES = 2;
 export const RELEGATION_PLACES = 2;
-// Gameweeks per promotion cycle. Two weeks is only two matches, too few to
-// separate anyone fairly; six gives the table meaning and still yields five or
-// six promotion rounds across a season.
-export const CYCLE_GAMEWEEKS = 6;
+// Gameweeks per promotion cycle. Four keeps promotion near and expected
+// without being so short that one result decides it.
+export const CYCLE_GAMEWEEKS = 4;
 
 // The pyramid. Elite sits at the top and only opens once a league is big
 // enough to fill it without spreading everyone thin (see ELITE_MIN_MEMBERS).

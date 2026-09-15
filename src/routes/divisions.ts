@@ -114,11 +114,40 @@ divisionsRouter.get("/:leagueId", authenticate, async (req: AuthRequest, res, ne
           orderBy: [{ leaguePoints: "desc" }, { totalPoints: "desc" }],
           include: { user: { select: { id: true, displayName: true, fplTeamName: true } } },
         });
+        const divFixtures = await prisma.fixture.findMany({
+          where: { divisionId: d.id },
+          orderBy: [{ gameweek: "asc" }],
+          include: {
+            homeEntry: { include: { user: { select: { displayName: true, fplTeamName: true } } } },
+            awayEntry: { include: { user: { select: { displayName: true, fplTeamName: true } } } },
+          },
+        });
+
         return {
           id: d.id,
           name: d.name,
           tier: d.tier,
           isMine: d.id === division.id,
+          fixtures: divFixtures.map((f) => ({
+            id: f.id,
+            round: f.round,
+            gameweek: f.gameweek,
+            settled: f.settled,
+            home: {
+              entryId: f.homeEntryId,
+              name: f.homeEntry?.user?.displayName || "",
+              team: f.homeEntry?.user?.fplTeamName || "",
+              points: f.homePoints,
+            },
+            away: f.awayEntryId
+              ? {
+                  entryId: f.awayEntryId,
+                  name: f.awayEntry?.user?.displayName || "",
+                  team: f.awayEntry?.user?.fplTeamName || "",
+                  points: f.awayPoints,
+                }
+              : null,
+          })),
           standings: rows.map((e, i) => ({
             position: i + 1,
             entryId: e.id,
