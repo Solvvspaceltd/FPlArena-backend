@@ -358,6 +358,72 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       }
     } catch (e) { /* optional */ }
 
+    // ---- Where you stand in your division, and what is at stake ----
+    // The most actionable thing in a fixtures league: are you climbing towards
+    // promotion or drifting into the relegation places?
+    let stakes: any = null;
+    try {
+      const myDivEntry = await prisma.entry.findFirst({
+        where: { userId: req.userId, divisionId: { not: null } },
+        include: { division: true },
+      });
+      if (myDivEntry?.division) {
+        const rows = await prisma.entry.findMany({
+          where: { divisionId: myDivEntry.divisionId },
+          orderBy: [{ leaguePoints: "desc" }, { totalPoints: "desc" }],
+          select: { id: true, leaguePoints: true },
+        });
+        const total = rows.length;
+        const pos = rows.findIndex((r) => r.id === myDivEntry.id) + 1;
+
+        // Two up, two down. Anything within a win of either is worth flagging.
+        const PROMO = 2;
+        const RELEG = 2;
+        const myPts = myDivEntry.leaguePoints;
+
+        const promoLine = rows[PROMO - 1]?.leaguePoints ?? 0;
+        const relegLine = rows[Math.max(0, total - RELEG)]?.leaguePoints ?? 0;
+
+        const tiersBelow = await prisma.division.count({
+          where: { leagueId: myDivEntry.division.leagueId,
+                   cycle: myDivEntry.division.cycle,
+                   tier: { gt: myDivEntry.division.tier } },
+        });
+        const tiersAbove = myDivEntry.division.tier > 1;
+
+        let state = "mid";
+        let message = "";
+        if (pos <= PROMO && tiersAbove) {
+          state = "promotion";
+          message = `You are ${pos === 1 ? "top" : "in the promotion places"} of `
+            + `${myDivEntry.division.name}. Hold this and you go up at the end of the cycle.`;
+        } else if (pos > total - RELEG && tiersBelow > 0) {
+          state = "relegation";
+          message = `You are in the relegation places in ${myDivEntry.division.name}. `
+            + `Your next fixture matters — a win pulls you clear.`;
+        } else if (tiersAbove && myPts >= promoLine - 3) {
+          state = "chasing";
+          message = `You are within a win of the promotion places in `
+            + `${myDivEntry.division.name}. Your next fixture could move you up.`;
+        } else if (tiersBelow > 0 && myPts <= relegLine + 3) {
+          state = "watch";
+          message = `You are within a win of the relegation places. Pay attention to your `
+            + `next fixture.`;
+        } else {
+          message = `You are ${pos} of ${total} in ${myDivEntry.division.name}.`;
+        }
+
+        stakes = {
+          division: myDivEntry.division.name,
+          position: pos,
+          total,
+          leaguePoints: myPts,
+          state,
+          message,
+        };
+      }
+    } catch (e) { /* optional */ }
+
     res.json({
       linked: true,
       ready: true,
@@ -370,6 +436,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       chips,
       captaincy,
       h2h,
+      stakes,
     });
   } catch (e) {
     next(e);
