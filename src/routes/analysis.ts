@@ -530,6 +530,70 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       };
     } catch (e) { /* optional */ }
 
+    // ---- How your players rank, and the market ----
+    // Two views of the same public data: your squad measured against the best
+    // in each position, and who the best actually are with their fixtures.
+    let squadRanking: any = null;
+    let market: any = null;
+    try {
+      const boot4 = await fplService.getBootstrap();
+      const POSN: Record<number, string> = { 1: "GK", 2: "DEF", 3: "MID", 4: "FWD" };
+      const teamShort4: Record<number, string> = {};
+      for (const t of boot4.teams || []) teamShort4[t.id] = t.short_name;
+
+      // The highest season total in each position, which is the 100% mark.
+      const best: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+      for (const e of boot4.elements || []) {
+        if (e.total_points > (best[e.element_type] || 0)) best[e.element_type] = e.total_points;
+      }
+
+      // Your starting XI as a share of the best in their position.
+      const myPicks4 = await fplService.getGwPicks(user.fplTeamId, gw);
+      const diffMap = await fplService.teamDifficulty(gw + 1, 5).catch(() => ({} as any));
+      const elById4: Record<number, any> = {};
+      for (const e of boot4.elements || []) elById4[e.id] = e;
+
+      const rows4: any[] = [];
+      for (const p of (myPicks4?.picks || [])) {
+        const e = elById4[p.element];
+        if (!e) continue;
+        const ceiling = best[e.element_type] || 1;
+        rows4.push({
+          id: e.id,
+          name: e.web_name,
+          team: teamShort4[e.team] || "",
+          position: POSN[e.element_type] || "",
+          points: e.total_points,
+          pct: Math.max(0, Math.min(100, Math.round((e.total_points / ceiling) * 100))),
+          starter: p.multiplier > 0,
+        });
+      }
+      rows4.sort((a, b) => b.pct - a.pct);
+      squadRanking = { players: rows4, best };
+
+      // Top five in each position, with ownership and the next five fixtures.
+      const byPos: Record<string, any[]> = { GK: [], DEF: [], MID: [], FWD: [] };
+      const sorted = [...(boot4.elements || [])].sort((a, b) => b.total_points - a.total_points);
+      for (const e of sorted) {
+        const key = POSN[e.element_type];
+        if (!key || byPos[key].length >= 5) continue;
+        const d = (diffMap as any)[e.team];
+        byPos[key].push({
+          id: e.id,
+          name: e.web_name,
+          team: teamShort4[e.team] || "",
+          points: e.total_points,
+          ownership: parseFloat(e.selected_by_percent || "0"),
+          price: e.now_cost / 10,
+          mine: rows4.some((r) => r.id === e.id),
+          fixtures: d ? d.fixtures.map((f: any) => ({
+            gw: f.gw, opponent: f.opponent, home: f.home, difficulty: f.difficulty,
+          })) : [],
+        });
+      }
+      market = byPos;
+    } catch (e) { /* optional */ }
+
     res.json({
       linked: true,
       ready: true,
@@ -544,6 +608,8 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       h2h,
       stakes,
       fixtureOutlook,
+      squadRanking,
+      market,
     });
   } catch (e) {
     next(e);

@@ -72,11 +72,23 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       gameweekHigh = top?.points ?? 0;
     }
 
-    // Did this user post the joint-highest score in the current gameweek? Drives
-    // the celebration when they open the app. Only when the gameweek has scores.
+    // Did this user post the joint-highest score in the current gameweek?
+    // Drives the celebration when they open the app.
+    //
+    // This must only fire once the gameweek is genuinely FINISHED. Matching the
+    // running high after the first match of a weekend is not winning anything,
+    // and celebrating it is both wrong and annoying. data_checked is FPL's flag
+    // for "all matches played and bonus applied".
     let isGameweekWinner = false;
     if (currentGameweek && gameweekHigh > 0 && gameweekPoints === gameweekHigh) {
-      isGameweekWinner = true;
+      try {
+        const finished = await fplService.isGwFinished(currentGameweek);
+        isGameweekWinner = finished;
+      } catch (e) {
+        // If we cannot tell, do not celebrate. A missed balloon is better than
+        // a false one.
+        isGameweekWinner = false;
+      }
     }
 
     // Position in every league the user is in.
