@@ -48,6 +48,18 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       gameweekPoints = score?.points ?? 0;
     }
 
+    // This gameweek's transfer hits, so the app can show "42 - 4 hit" rather
+    // than a net number that looks wrong next to the FPL app.
+    let hits = 0;
+    if (currentGameweek && user.fplTeamId) {
+      try {
+        const picks = await fplService.getGwPicks(user.fplTeamId, currentGameweek);
+        hits = picks?.entry_history?.event_transfers_cost || 0;
+      } catch (e) {
+        /* optional */
+      }
+    }
+
     // Highest score any Clashd player has this gameweek — a target on the Home
     // screen. Deduped isn't needed: max is max even across duplicate rows.
     let gameweekHigh = 0;
@@ -287,6 +299,7 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       linked: !!user.fplTeamId,
       currentGameweek,
       gameweekPoints,
+      hits,
       gameweekHigh,
       isGameweekWinner,
       seasonPoints: user.totalPoints,

@@ -391,12 +391,33 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         });
         const tiersAbove = myDivEntry.division.tier > 1;
 
+        // Gaps to the managers immediately above and below, so the message can
+        // be about the actual contest rather than a bare position.
+        const aheadPts = pos > 1 ? rows[pos - 2].leaguePoints - myPts : null;
+        const behindPts = pos < total ? myPts - rows[pos].leaguePoints : null;
+
         let state = "mid";
         let message = "";
-        if (pos <= PROMO && tiersAbove) {
+        if (pos === 1 && !tiersAbove) {
+          // Top of the top tier: nothing to be promoted to, but plenty to defend.
+          state = "leading";
+          message = behindPts != null
+            ? (behindPts === 0
+                ? `You lead ${myDivEntry.division.name}, level on points with second. `
+                  + `Your next fixture could cost you top spot.`
+                : `You lead ${myDivEntry.division.name} by `
+                  + `${behindPts} point${behindPts === 1 ? "" : "s"}. Keep winning and it stays that way.`)
+            : `You lead ${myDivEntry.division.name}.`;
+        } else if (pos <= PROMO && tiersAbove) {
           state = "promotion";
           message = `You are ${pos === 1 ? "top" : "in the promotion places"} of `
             + `${myDivEntry.division.name}. Hold this and you go up at the end of the cycle.`;
+        } else if (pos <= PROMO && !tiersAbove) {
+          state = "chasing";
+          message = aheadPts != null && aheadPts > 0
+            ? `You are ${pos} of ${total} in ${myDivEntry.division.name}, `
+              + `${aheadPts} point${aheadPts === 1 ? "" : "s"} off top. A win closes the gap.`
+            : `You are ${pos} of ${total} in ${myDivEntry.division.name}, right in the hunt.`;
         } else if (pos > total - RELEG && tiersBelow > 0) {
           state = "relegation";
           message = `You are in the relegation places in ${myDivEntry.division.name}. `
@@ -410,7 +431,10 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
           message = `You are within a win of the relegation places. Pay attention to your `
             + `next fixture.`;
         } else {
-          message = `You are ${pos} of ${total} in ${myDivEntry.division.name}.`;
+          message = aheadPts != null && aheadPts > 0
+            ? `You are ${pos} of ${total} in ${myDivEntry.division.name}, `
+              + `${aheadPts} point${aheadPts === 1 ? "" : "s"} off the place above.`
+            : `You are ${pos} of ${total} in ${myDivEntry.division.name}.`;
         }
 
         stakes = {
@@ -422,6 +446,88 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
           message,
         };
       }
+    } catch (e) { /* optional */ }
+
+    // ---- Fixture difficulty: yours, and your rivals' ----
+    // FPL publishes a 1-5 difficulty per fixture. On its own that is a free
+    // stat. Set against the squads of the managers you are actually drawn
+    // with, it becomes something no general FPL site can tell you.
+    let fixtureOutlook: any = null;
+    try {
+      const NEXT = 5;
+      const diff = await fplService.teamDifficulty(gw + 1, NEXT);
+      const boot3 = await fplService.getBootstrap();
+      const elById: Record<number, any> = {};
+      for (const e of boot3.elements || []) elById[e.id] = e;
+
+      // Average difficulty facing a manager's starting XI.
+      const squadOutlook = async (teamId: number) => {
+        const picks = await fplService.getGwPicks(teamId, gw);
+        const starters = (picks?.picks || []).filter((p: any) => p.multiplier > 0);
+        const vals: number[] = [];
+        const perPlayer: any[] = [];
+        for (const p of starters) {
+          const el = elById[p.element];
+          if (!el) continue;
+          const d = diff[el.team];
+          if (!d || !d.fixtures.length) continue;
+          vals.push(d.avg);
+          perPlayer.push({
+            id: el.id, name: el.web_name, team: d.short,
+            avg: d.avg,
+            fixtures: d.fixtures.map((f: any) => ({
+              gw: f.gw, opponent: f.opponent, home: f.home, difficulty: f.difficulty,
+            })),
+          });
+        }
+        const avg = vals.length
+          ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10
+          : 0;
+        return { avg, players: perPlayer };
+      };
+
+      const mine = await squadOutlook(user.fplTeamId);
+
+      // The same for the managers in your division.
+      const rivals: any[] = [];
+      const myDiv = await prisma.entry.findFirst({
+        where: { userId: req.userId, divisionId: { not: null } },
+        select: { divisionId: true },
+      });
+      if (myDiv?.divisionId) {
+        const others = await prisma.entry.findMany({
+          where: { divisionId: myDiv.divisionId, userId: { not: req.userId } },
+          include: { user: { select: { fplTeamId: true, displayName: true, fplTeamName: true } } },
+          take: 8,
+        });
+        for (const r of others) {
+          if (!r.user.fplTeamId) continue;
+          try {
+            const o = await squadOutlook(r.user.fplTeamId);
+            rivals.push({
+              team: r.user.fplTeamName || r.user.displayName,
+              avg: o.avg,
+            });
+          } catch (e) { /* skip a rival we cannot read */ }
+        }
+      }
+      rivals.sort((a, b) => a.avg - b.avg);
+
+      // Where you sit among them: lower average difficulty is a better run.
+      const better = rivals.filter((r) => r.avg < mine.avg).length;
+      const easiest = [...mine.players].sort((a, b) => a.avg - b.avg).slice(0, 4);
+      const hardest = [...mine.players].sort((a, b) => b.avg - a.avg).slice(0, 4);
+
+      fixtureOutlook = {
+        gameweeks: NEXT,
+        fromGameweek: gw + 1,
+        myAverage: mine.avg,
+        rivals,
+        rankAmongRivals: better + 1,
+        totalCompared: rivals.length + 1,
+        easiest,
+        hardest,
+      };
     } catch (e) { /* optional */ }
 
     res.json({
@@ -437,6 +543,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       captaincy,
       h2h,
       stakes,
+      fixtureOutlook,
     });
   } catch (e) {
     next(e);
