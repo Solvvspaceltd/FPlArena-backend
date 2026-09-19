@@ -61,11 +61,21 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     }
     if (!gw) return res.json({ linked: true, ready: false });
 
+    // The Gameweek report reads the last gameweek that has fully finished.
+    // While the live gameweek is still being played its numbers are partial
+    // (a handful of fixtures, most scores near zero), which rendered the
+    // Gameweek section as empty on a Saturday morning.
+    let reportGw: number = gw;
+    try {
+      const done = await fplService.isGwFinished(gw);
+      if (!done && gw > 1) reportGw = gw - 1;
+    } catch (e) { /* keep live gameweek */ }
+
     // ---- Layer 1: where your points went ----
     let pointsLeftBehind: any = null;
     try {
-      const picks = await fpl.picks(user.fplTeamId, gw);
-      const live = await fpl.live(gw);
+      const picks = await fpl.picks(user.fplTeamId, reportGw);
+      const live = await fpl.live(reportGw);
 
       const starters = (picks?.picks || []).filter((p: any) => p.multiplier > 0);
       const bench = (picks?.picks || []).filter((p: any) => p.multiplier === 0);
@@ -641,7 +651,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     let dashboard: any = null;
     let lever: any = null;
     try {
-      dashboard = await dashboardMetrics(req.userId!, user.fplTeamId, gw);
+      dashboard = await dashboardMetrics(req.userId!, user.fplTeamId, reportGw);
     } catch (e) { /* optional */ }
     try {
       lever = await biggestLever(req.userId!);
@@ -658,7 +668,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       let divisionAvg: number | null = null;
       if (myDivB?.divisionId) {
         const divRows = await prisma.gwScore.findMany({
-          where: { gameweek: gw, entry: { divisionId: myDivB.divisionId } },
+          where: { gameweek: reportGw, entry: { divisionId: myDivB.divisionId } },
           select: { points: true },
         });
         divisionAvg = divRows.length
@@ -673,7 +683,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         // Their scores are not stored, so use the platform's top decile as a
         // stand-in for "the best are scoring about this".
         const all = await prisma.gwScore.findMany({
-          where: { gameweek: gw }, select: { points: true },
+          where: { gameweek: reportGw }, select: { points: true },
           orderBy: { points: "desc" },
         });
         const take = Math.max(1, Math.ceil(all.length * 0.1));
@@ -689,6 +699,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       linked: true,
       ready: true,
       gameweek: gw,
+      reportGameweek: reportGw,
       rating,
       pointsLeftBehind,
       rivalDiffs,
