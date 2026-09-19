@@ -260,21 +260,32 @@ export async function biggestLever(userId: string) {
   let rank: number | null = null;
   let total: number | null = null;
   if (myEntry?.divisionId) {
-    const others = await prisma.entry.findMany({
+    // One query for every division member's bench points, ranked in memory.
+    // The previous version ran a separate query per manager inside a loop,
+    // which is the same mistake the summary endpoint had in v20.
+    const members = await prisma.entry.findMany({
       where: { divisionId: myEntry.divisionId },
       select: { userId: true },
     });
-    const totals: number[] = [];
-    for (const o of others) {
-      const rows = await prisma.gwScore.findMany({
-        where: { entry: { userId: o.userId } },
-        select: { gameweek: true, pointsOnBench: true },
-      });
-      const u = new Map<number, number>();
-      for (const r of rows) if (!u.has(r.gameweek)) u.set(r.gameweek, r.pointsOnBench);
-      totals.push(Array.from(u.values()).reduce((a, b) => a + b, 0));
+    const ids = members.map((m) => m.userId);
+
+    const allRows = await prisma.gwScore.findMany({
+      where: { entry: { userId: { in: ids } } },
+      select: { gameweek: true, pointsOnBench: true, entry: { select: { userId: true } } },
+    });
+
+    const perUser = new Map<string, Map<number, number>>();
+    for (const r of allRows) {
+      const uid = r.entry.userId;
+      if (!perUser.has(uid)) perUser.set(uid, new Map());
+      const m = perUser.get(uid)!;
+      if (!m.has(r.gameweek)) m.set(r.gameweek, r.pointsOnBench);
     }
-    totals.sort((a, b) => b - a);
+
+    const totals = Array.from(perUser.values())
+      .map((m) => Array.from(m.values()).reduce((a, b) => a + b, 0))
+      .sort((a, b) => b - a);
+
     rank = totals.indexOf(benchTotal) + 1;
     total = totals.length;
   }

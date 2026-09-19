@@ -5,6 +5,32 @@ import { fplService } from "../services/fpl";
 import { getCachedFormPicks } from "../jobs/formPicks";
 import { dashboardMetrics, biggestLever } from "../services/dashboard";
 
+/**
+ * Per-request memo for FPL reads.
+ *
+ * Each panel below was written independently and fetched what it needed. That
+ * left one request pulling the caller's picks four times, bootstrap four times,
+ * and every rival's picks twice — 6.5 seconds. Everything goes through here now,
+ * so each distinct thing is fetched at most once per request.
+ */
+function makeFplCache() {
+  const store = new Map<string, Promise<any>>();
+  const once = <T>(key: string, fn: () => Promise<T>): Promise<T> => {
+    if (!store.has(key)) store.set(key, fn().catch((e) => { store.delete(key); throw e; }));
+    return store.get(key) as Promise<T>;
+  };
+  return {
+    bootstrap: () => once("boot", () => fplService.getBootstrap()),
+    live: (gw: number) => once("live:" + gw, () => fplService.getLiveGwPoints(gw)),
+    picks: (teamId: number, gw: number) =>
+      once("picks:" + teamId + ":" + gw, () => fplService.getGwPicks(teamId, gw)),
+    history: (teamId: number) =>
+      once("hist:" + teamId, () => fplService.getHistory(teamId)),
+    difficulty: (from: number, n: number) =>
+      once("diff:" + from + ":" + n, () => fplService.teamDifficulty(from, n)),
+  };
+}
+
 export const analysisRouter = Router();
 
 /**
@@ -25,6 +51,8 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       return res.json({ linked: false });
     }
 
+    const fpl = makeFplCache();
+
     let gw: number | null = null;
     try {
       gw = await fplService.getCurrentGameweek();
@@ -36,8 +64,8 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     // ---- Layer 1: where your points went ----
     let pointsLeftBehind: any = null;
     try {
-      const picks = await fplService.getGwPicks(user.fplTeamId, gw);
-      const live = await fplService.getLiveGwPoints(gw);
+      const picks = await fpl.picks(user.fplTeamId, gw);
+      const live = await fpl.live(gw);
 
       const starters = (picks?.picks || []).filter((p: any) => p.multiplier > 0);
       const bench = (picks?.picks || []).filter((p: any) => p.multiplier === 0);
@@ -75,7 +103,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     // ---- Layer 2: your rivals own, you don't ----
     let rivalDiffs: any[] = [];
     try {
-      const myPicks = await fplService.getGwPicks(user.fplTeamId, gw);
+      const myPicks = await fpl.picks(user.fplTeamId, gw);
       const mine = new Set<number>((myPicks?.picks || []).map((p: any) => p.element));
 
       // Rivals = the entries directly around you in your biggest league's division.
@@ -95,10 +123,16 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         });
 
         const own = new Map<number, number>();
+        // Fetched together rather than one at a time: the slow part is the
+        // round trip, not the work.
+        await Promise.all(rivals
+          .filter((r) => r.user.fplTeamId)
+          .map((r) => fpl.picks(r.user.fplTeamId!, gw).catch(() => null)));
+
         for (const r of rivals) {
           if (!r.user.fplTeamId) continue;
           try {
-            const rp = await fplService.getGwPicks(r.user.fplTeamId, gw);
+            const rp = await fpl.picks(r.user.fplTeamId, gw);
             for (const p of (rp?.picks || []).filter((x: any) => x.multiplier > 0)) {
               if (!mine.has(p.element)) {
                 own.set(p.element, (own.get(p.element) || 0) + 1);
@@ -109,7 +143,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
           }
         }
 
-        const boot = await fplService.getBootstrap();
+        const boot = await fpl.bootstrap();
         const teamShort: Record<number, string> = {};
         for (const t of boot.teams || []) teamShort[t.id] = t.short_name;
         const POS: Record<number, string> = { 1: "GK", 2: "DEF", 3: "MID", 4: "FWD" };
@@ -143,8 +177,8 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     // injured player especially). Facts pulled from bootstrap + the user's picks.
     let warnings: any[] = [];
     try {
-      const myPicks2 = await fplService.getGwPicks(user.fplTeamId, gw);
-      const boot2 = await fplService.getBootstrap();
+      const myPicks2 = await fpl.picks(user.fplTeamId, gw);
+      const boot2 = await fpl.bootstrap();
       const teamShort2: Record<number, string> = {};
       for (const t of boot2.teams || []) teamShort2[t.id] = t.short_name;
       const POS2: Record<number, string> = { 1: "GK", 2: "DEF", 3: "MID", 4: "FWD" };
@@ -242,7 +276,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     // but nobody surfaces it against the people you are actually playing.
     let chips: any = null;
     try {
-      const myHist = await fplService.getHistory(user.fplTeamId);
+      const myHist = await fpl.history(user.fplTeamId);
       const myUsed = (myHist?.chips || []).map((c: any) => c.name);
       const ALL_CHIPS = ["wildcard", "bboost", "3xc", "freehit"];
       const LABEL: Record<string, string> = {
@@ -262,10 +296,14 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
           include: { user: { select: { fplTeamId: true } } },
           take: 8,
         });
+        await Promise.all(rivals
+          .filter((r) => r.user.fplTeamId)
+          .map((r) => fpl.history(r.user.fplTeamId!).catch(() => null)));
+
         for (const r of rivals) {
           if (!r.user.fplTeamId) continue;
           try {
-            const h = await fplService.getHistory(r.user.fplTeamId);
+            const h = await fpl.history(r.user.fplTeamId);
             const used = (h?.chips || []).map((c: any) => c.name);
             rivalCount += 1;
             for (const c of ALL_CHIPS) {
@@ -456,14 +494,14 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     let fixtureOutlook: any = null;
     try {
       const NEXT = 5;
-      const diff = await fplService.teamDifficulty(gw + 1, NEXT);
-      const boot3 = await fplService.getBootstrap();
+      const diff = await fpl.difficulty(gw + 1, NEXT);
+      const boot3 = await fpl.bootstrap();
       const elById: Record<number, any> = {};
       for (const e of boot3.elements || []) elById[e.id] = e;
 
       // Average difficulty facing a manager's starting XI.
       const squadOutlook = async (teamId: number) => {
-        const picks = await fplService.getGwPicks(teamId, gw);
+        const picks = await fpl.picks(teamId, gw);
         const starters = (picks?.picks || []).filter((p: any) => p.multiplier > 0);
         const vals: number[] = [];
         const perPlayer: any[] = [];
@@ -501,6 +539,10 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
           include: { user: { select: { fplTeamId: true, displayName: true, fplTeamName: true } } },
           take: 8,
         });
+        await Promise.all(others
+          .filter((r) => r.user.fplTeamId)
+          .map((r) => fpl.picks(r.user.fplTeamId!, gw).catch(() => null)));
+
         for (const r of others) {
           if (!r.user.fplTeamId) continue;
           try {
@@ -537,7 +579,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     let squadRanking: any = null;
     let market: any = null;
     try {
-      const boot4 = await fplService.getBootstrap();
+      const boot4 = await fpl.bootstrap();
       const POSN: Record<number, string> = { 1: "GK", 2: "DEF", 3: "MID", 4: "FWD" };
       const teamShort4: Record<number, string> = {};
       for (const t of boot4.teams || []) teamShort4[t.id] = t.short_name;
@@ -549,8 +591,8 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       }
 
       // Your starting XI as a share of the best in their position.
-      const myPicks4 = await fplService.getGwPicks(user.fplTeamId, gw);
-      const diffMap = await fplService.teamDifficulty(gw + 1, 5).catch(() => ({} as any));
+      const myPicks4 = await fpl.picks(user.fplTeamId, gw);
+      const diffMap = await fpl.difficulty(gw + 1, 5).catch(() => ({} as any));
       const elById4: Record<number, any> = {};
       for (const e of boot4.elements || []) elById4[e.id] = e;
 
