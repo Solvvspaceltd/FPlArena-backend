@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { fplService } from "../services/fpl";
 import { getCachedFormPicks } from "../jobs/formPicks";
+import { dashboardMetrics, biggestLever } from "../services/dashboard";
 
 export const analysisRouter = Router();
 
@@ -594,6 +595,54 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       market = byPos;
     } catch (e) { /* optional */ }
 
+    // ---- Dashboard metrics: efficiency, percentile, attribution, form ----
+    let dashboard: any = null;
+    let lever: any = null;
+    try {
+      dashboard = await dashboardMetrics(req.userId!, user.fplTeamId, gw);
+    } catch (e) { /* optional */ }
+    try {
+      lever = await biggestLever(req.userId!);
+    } catch (e) { /* optional */ }
+
+    // How the top managers and your own division scored this gameweek, so the
+    // report can say "you were 7 off the top 40" rather than just your total.
+    let benchmarks: any = null;
+    try {
+      const myDivB = await prisma.entry.findFirst({
+        where: { userId: req.userId, divisionId: { not: null } },
+        select: { divisionId: true },
+      });
+      let divisionAvg: number | null = null;
+      if (myDivB?.divisionId) {
+        const divRows = await prisma.gwScore.findMany({
+          where: { gameweek: gw, entry: { divisionId: myDivB.divisionId } },
+          select: { points: true },
+        });
+        divisionAvg = divRows.length
+          ? Math.round(divRows.reduce((a, b) => a + b.points, 0) / divRows.length)
+          : null;
+      }
+
+      // The in-form pack's average, from the cached weekly snapshot.
+      let topAvg: number | null = null;
+      const snap: any = inForm;
+      if (snap && snap.sampleSize) {
+        // Their scores are not stored, so use the platform's top decile as a
+        // stand-in for "the best are scoring about this".
+        const all = await prisma.gwScore.findMany({
+          where: { gameweek: gw }, select: { points: true },
+          orderBy: { points: "desc" },
+        });
+        const take = Math.max(1, Math.ceil(all.length * 0.1));
+        topAvg = Math.round(
+          all.slice(0, take).reduce((a, b) => a + b.points, 0) / take
+        );
+      }
+
+      benchmarks = { divisionAvg, topAvg };
+    } catch (e) { /* optional */ }
+
     res.json({
       linked: true,
       ready: true,
@@ -610,6 +659,9 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       fixtureOutlook,
       squadRanking,
       market,
+      dashboard,
+      lever,
+      benchmarks,
     });
   } catch (e) {
     next(e);
