@@ -5,6 +5,7 @@ import { fplService } from "../services/fpl";
 import { getCachedFormPicks } from "../jobs/formPicks";
 import { dashboardMetrics, biggestLever } from "../services/dashboard";
 import { buildPlan, buildHomeCard } from "../services/plan";
+import { pushRouter } from "./push";
 
 /**
  * Per-request memo for FPL reads.
@@ -33,6 +34,9 @@ function makeFplCache() {
 }
 
 export const analysisRouter = Router();
+
+// Push notifications live under /api/analysis/push (see routes/push.ts).
+analysisRouter.use("/push", pushRouter);
 
 /**
  * GET /api/analysis

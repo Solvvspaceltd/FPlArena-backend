@@ -266,3 +266,27 @@ model PendingMember {
   @@index([fplTeamId])
   @@map("pending_members")
 }
+
+// ---- Push notifications ----------------------------------------------------
+// One row per phone. prefs holds which alerts are on: deadline, captain, results.
+model PushDevice {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String
+  prefs     Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([userId])
+  @@map("push_devices")
+}
+
+// Every alert sent, keyed so the same alert is never sent twice.
+model PushLog {
+  id     String   @id @default(uuid())
+  userId String
+  key    String
+  sentAt DateTime @default(now())
+  @@unique([userId, key])
+  @@map("push_logs")
+}
