@@ -4,6 +4,7 @@ import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { fplService } from "../services/fpl";
 import { getCachedFormPicks } from "../jobs/formPicks";
 import { dashboardMetrics, biggestLever } from "../services/dashboard";
+import { buildPlan, buildHomeCard } from "../services/plan";
 
 /**
  * Per-request memo for FPL reads.
@@ -700,6 +701,8 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       ready: true,
       gameweek: gw,
       reportGameweek: reportGw,
+      // Once a gameweek has finished, people are planning the next one.
+      defaultMode: reportGw === gw ? "plan" : "back",
       rating,
       pointsLeftBehind,
       rivalDiffs,
@@ -718,5 +721,27 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     });
   } catch (e) {
     next(e);
+  }
+});
+
+/**
+ * GET /api/analysis/plan
+ * Plan ahead: match forecast, captaincy, transfers, chips and squad outlook,
+ * all built on the forecasting engine and pointed at the user's rivals.
+ */
+analysisRouter.get("/plan", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    res.json(await buildPlan(req.userId!, { fresh: req.query.fresh === "1" }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET /api/analysis/home-card  The deadline card on Home. */
+analysisRouter.get("/home-card", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    res.json(await buildHomeCard(req.userId!));
+  } catch (err) {
+    next(err);
   }
 });
