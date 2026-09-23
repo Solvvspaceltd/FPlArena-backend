@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../utils/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { fplService } from "../services/fpl";
+import { displayScore } from "../services/scoreFormats";
 
 export const summaryRouter = Router();
 
@@ -138,6 +139,7 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
     }
 
     const leagues = activeEntries.map((e) => {
+      const shown = displayScore(e.league.format, e.totalPoints);
       const pts = byLeague.get(e.leagueId) || [];
       const total = pts.length;
       const position = pts.filter((p) => p > e.totalPoints).length + 1;
@@ -158,7 +160,10 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         total,
         tablePosition,
         tableTotal,
-        points: e.totalPoints,
+        points: shown.value,
+        rawPoints: e.totalPoints,
+        scoreLabel: shown.label,
+        scoreDetail: shown.detail,
         leaguePoints: e.leaguePoints,
         division: e.division?.name || null,
         imported: !!e.league.importedFromFplId,

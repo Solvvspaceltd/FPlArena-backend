@@ -6,6 +6,7 @@ import { getCachedFormPicks } from "../jobs/formPicks";
 import { dashboardMetrics, biggestLever } from "../services/dashboard";
 import { buildPlan, buildHomeCard } from "../services/plan";
 import { pushRouter } from "./push";
+import { requirePro } from "../middleware/requirePro";
 
 /**
  * Per-request memo for FPL reads.
@@ -46,7 +47,7 @@ analysisRouter.use("/push", pushRouter);
  *   2. Your rivals own, you don't — differentials vs your league opponents.
  *   3. The in-form 30 — shared weekly intelligence (own / buying / selling).
  */
-analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
+analysisRouter.get("/", authenticate, requirePro, async (req: AuthRequest, res, next) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId },
@@ -733,7 +734,7 @@ analysisRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
  * Plan ahead: match forecast, captaincy, transfers, chips and squad outlook,
  * all built on the forecasting engine and pointed at the user's rivals.
  */
-analysisRouter.get("/plan", authenticate, async (req: AuthRequest, res, next) => {
+analysisRouter.get("/plan", authenticate, requirePro, async (req: AuthRequest, res, next) => {
   try {
     res.json(await buildPlan(req.userId!, { fresh: req.query.fresh === "1" }));
   } catch (err) {

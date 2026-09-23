@@ -19,6 +19,7 @@ import { divisionsRouter } from "./routes/divisions";
 import { summaryRouter } from "./routes/summary";
 import { analysisRouter } from "./routes/analysis";
 import { importRouter } from "./routes/import";
+import { billingRouter } from "./routes/billing";
 import { errorHandler } from "./middleware/errorHandler";
 import { setupSocket } from "./services/socket";
 import { startSyncJobs } from "./jobs/fplSync";
@@ -47,6 +48,7 @@ app.use("/api/divisions", divisionsRouter);
 app.use("/api/summary", summaryRouter);
 app.use("/api/analysis", analysisRouter);
 app.use("/api/import", importRouter);
+app.use("/api/billing", billingRouter);
 
 app.get("/health", (_req, res) => res.json({
   status: "ok",

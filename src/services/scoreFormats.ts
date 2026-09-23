@@ -218,3 +218,21 @@ export function scoreLabel(format: string) {
     default: return "Points";
   }
 }
+
+
+/**
+ * RANK_CLIMB stores its tiebreak inside the integer: arrows in the millions,
+ * places gained below. That encoding is ours, not the manager's, so it is
+ * decoded here before any of it reaches a client. Everything else passes
+ * through untouched.
+ */
+export function displayScore(format: string, total: number) {
+  if (format === "RANK_CLIMB") {
+    return {
+      value: Math.floor(total / 1000000),
+      detail: total % 1000000,
+      label: "Green arrows",
+    };
+  }
+  return { value: total, detail: null as number | null, label: scoreLabel(format) };
+}

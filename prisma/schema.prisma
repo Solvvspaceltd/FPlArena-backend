@@ -12,6 +12,15 @@ enum UserRole {
   ADMIN
 }
 
+/// How a manager came to hold Clashd Analysis.
+enum ProSource {
+  NONE
+  APPLE
+  GOOGLE
+  CLUB
+  COMP
+}
+
 enum LeagueStatus {
   UPCOMING
   ACTIVE
@@ -46,12 +55,22 @@ model User {
   totalPoints   Int       @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+
+  // Clashd Analysis. Written only by the RevenueCat webhook or an admin comp;
+  // never by the app. Read through services/entitlements.ts, never directly.
+  proUntil      DateTime?
+  proSource     ProSource @default(NONE)
+  proProductId  String?
+  proWillRenew  Boolean   @default(false)
+
   entries       Entry[]
   notifications Notification[]
   createdLeagues League[] @relation("LeagueCreator")
   asidePicks     AsidePick[]
   squadSnapshots SquadSnapshot[]
   posts          Post[]
+  billingEvents  BillingEvent[]
+  clubPasses     ClubPass[]
   @@map("users")
 }
 
@@ -78,6 +97,7 @@ model League {
   divisions     Division[]
   importedFromFplId Int?      @unique
   pendingMembers PendingMember[]
+  clubPasses    ClubPass[]
   @@map("leagues")
 }
 
@@ -289,4 +309,51 @@ model PushLog {
   sentAt DateTime @default(now())
   @@unique([userId, key])
   @@map("push_logs")
+}
+
+
+/// One league's Club pass for one season. Covers the first `seats` managers to
+/// have joined that league, by joinedAt. Bought by the manager who created it.
+model ClubPass {
+  id            String    @id @default(uuid())
+  leagueId      String
+  league        League    @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  season        String
+  seats         Int
+  amountPence   Int
+  productId     String
+  store         String
+  transactionId String
+  purchasedById String
+  purchasedBy   User      @relation(fields: [purchasedById], references: [id])
+  /// False until the RevenueCat webhook confirms the same transaction.
+  verified      Boolean   @default(false)
+  activeFrom    DateTime  @default(now())
+  activeUntil   DateTime
+  cancelledAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  @@unique([leagueId, season])
+  @@index([season])
+  @@index([transactionId])
+  @@map("club_passes")
+}
+
+/// Every webhook RevenueCat sends, stored whole. The eventId unique constraint
+/// is what makes the webhook safe to retry.
+model BillingEvent {
+  id          String    @id @default(uuid())
+  eventId     String    @unique
+  type        String
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
+  productId   String?
+  store       String?
+  environment String?
+  expiresAt   DateTime?
+  payload     Json
+  createdAt   DateTime  @default(now())
+  @@index([userId])
+  @@index([type])
+  @@map("billing_events")
 }
