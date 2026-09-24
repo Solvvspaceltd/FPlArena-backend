@@ -9,12 +9,17 @@
  *   PREVIEW  every account, while CLASHD_FREE_PREVIEW is on (pre-launch)
  *   APPLE    an App Store subscription, monthly or yearly
  *   GOOGLE   the same through Play
- *   CLUB     somebody bought a Club pass for a league this manager is in
  *   COMP     granted by an admin (press, partners, support goodwill)
+ *
+ * A Club pass is NOT one of them. Club keeps an imported league running for a
+ * season; Analysis is bought by a manager for themselves. Two products, two
+ * reasons to buy, and one never grants the other. The club field below is
+ * reported so a screen can say "this league is covered to May", not to open
+ * anything.
  */
 import { prisma } from "../utils/prisma";
 
-export type EntitlementSource = "PREVIEW" | "APPLE" | "GOOGLE" | "CLUB" | "COMP" | "NONE";
+export type EntitlementSource = "PREVIEW" | "APPLE" | "GOOGLE" | "COMP" | "NONE";
 
 export interface Entitlement {
   pro: boolean;
@@ -100,26 +105,21 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
     return { ...NONE, pro: true, source: "COMP" };
   }
 
-  // Otherwise, is a Club pass covering them?
+  // A Club pass does not grant Analysis. It is reported here only so the app
+  // can tell somebody which of their leagues is paid for and until when.
   const club = await coveringClubPass(userId, now);
-  if (club) {
-    return {
-      pro: true,
-      source: "CLUB",
-      until: club.activeUntil,
-      willRenew: false,
-      productId: club.productId,
-      club: {
-        leagueId: club.leagueId,
-        leagueName: club.leagueName,
-        season: club.season,
-        seats: club.seats,
-        activeUntil: club.activeUntil,
-      },
-    };
-  }
-
-  return { ...NONE };
+  return {
+    ...NONE,
+    club: club
+      ? {
+          leagueId: club.leagueId,
+          leagueName: club.leagueName,
+          season: club.season,
+          seats: club.seats,
+          activeUntil: club.activeUntil,
+        }
+      : null,
+  };
 }
 
 /**
