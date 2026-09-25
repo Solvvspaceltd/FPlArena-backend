@@ -7,6 +7,8 @@ import { dashboardMetrics, biggestLever } from "../services/dashboard";
 import { buildPlan, buildHomeCard } from "../services/plan";
 import { pushRouter } from "./push";
 import { requirePro } from "../middleware/requirePro";
+import { packDifferentials } from "../services/differentials";
+import { AppError } from "../utils/AppError";
 
 /**
  * Per-request memo for FPL reads.
@@ -749,4 +751,20 @@ analysisRouter.get("/home-card", authenticate, async (req: AuthRequest, res, nex
   } catch (err) {
     next(err);
   }
+});
+
+
+/**
+ * GET /api/analysis/differentials
+ *
+ * The pack: the thirty managers above you on Clashd and the thirty below, what
+ * they own that you do not, and what that is worth in each direction. Reads
+ * squad_snapshots and the projection model, so no FPL calls happen here.
+ */
+analysisRouter.get("/differentials", authenticate, requirePro, async (req: AuthRequest, res, next) => {
+  try {
+    const out = await packDifferentials(req.userId!);
+    if (!out) throw new AppError("Account not found", 404);
+    res.json(out);
+  } catch (err) { next(err); }
 });
