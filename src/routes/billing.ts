@@ -127,7 +127,16 @@ billingRouter.post("/revenuecat", async (req, res, next) => {
   try {
     const secret = process.env.REVENUECAT_WEBHOOK_SECRET;
     if (!secret) throw new AppError("Billing webhook is not configured", 503);
-    if (req.headers.authorization !== secret) throw new AppError("Bad webhook signature", 401);
+
+    // Compare forgivingly. A shared secret copied between two dashboards picks
+    // up trailing whitespace, a newline, or a "Bearer " prefix somebody added
+    // out of habit, and none of those are a real signature failure. What is
+    // left after trimming still has to match exactly.
+    const sent = String(req.headers.authorization || "")
+      .trim()
+      .replace(/^Bearer\s+/i, "");
+    const want = String(secret).trim().replace(/^Bearer\s+/i, "");
+    if (!sent || sent !== want) throw new AppError("Bad webhook signature", 401);
 
     const event = req.body?.event;
     if (!event?.id || !event?.type) throw new AppError("Malformed webhook body", 400);
