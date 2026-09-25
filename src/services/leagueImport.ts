@@ -1,4 +1,5 @@
 import { prisma } from "../utils/prisma";
+import { clubBandFor, CLUB_PRODUCTS } from "./entitlements";
 import { fplService } from "./fpl";
 import { readLeagueBulk } from "./bulkSync";
 
@@ -62,8 +63,11 @@ const SUITE: Array<{
 /** How many leagues one user may import. */
 export const MAX_IMPORTS_PER_USER = 3;
 
-/** Per-manager, per-year price in pounds. */
-export const PRICE_PER_MANAGER = 2;
+/**
+ * What a league costs is a Club pass, not a per-head sum. The bands live in
+ * entitlements.ts because that is where the App Store product ids live, and
+ * quoting anything else here would show a price that cannot be bought.
+ */
 
 export type ImportResult = {
   leagueId: string;
@@ -72,7 +76,8 @@ export type ImportResult = {
   onClashd: number;
   pending: number;
   competitions: number;
-  priceGbp: number;
+  /** The Club pass this league needs, or null if it is past the largest band. */
+  club: { productId: string; seats: number; price: string; pence: number } | null;
 };
 
 /**
@@ -187,7 +192,7 @@ export async function importMiniLeague(
     onClashd,
     pending: pendingIds.length,
     competitions: created.length,
-    priceGbp: managers.length * PRICE_PER_MANAGER,
+    club: clubPassFor(managers.length),
   };
 }
 
@@ -296,4 +301,18 @@ export async function joinImportedSuite(userId: string, inviteCode: string) {
   }
 
   return { joined, competitions: leagues.length };
+}
+
+
+/** The Club band that covers a league of this size, priced for display. */
+export function clubPassFor(managers: number) {
+  const band = clubBandFor(managers);
+  if (!band) return null;
+  const pence = CLUB_PRODUCTS[band.productId].pence;
+  return {
+    productId: band.productId,
+    seats: band.seats,
+    price: pence % 100 === 0 ? `£${pence / 100}` : `£${(pence / 100).toFixed(2)}`,
+    pence,
+  };
 }
