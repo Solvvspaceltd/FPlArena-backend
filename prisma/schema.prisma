@@ -12,6 +12,41 @@ enum UserRole {
   ADMIN
 }
 
+/// Whether an account may be used, and why not if it may not.
+///
+/// ACTIVE     Normal.
+/// SUSPENDED  Cannot sign in. Temporary and reversible. Entries and scores are
+///            left alone, so no league table this manager competed in changes.
+/// BLOCKED    Cannot sign in, permanently, and the email cannot register again.
+/// DELETED    Soft. Gone from the manager's side and shown as a former manager
+///            in public standings. Personal fields are cleared by the purge job
+///            after the retention window; entries and scores stay, because
+///            removing them would rewrite finished competitions.
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BLOCKED
+  DELETED
+}
+
+/// The closed set of admin actions worth recording. Anything that changes what
+/// another person can do, or that moves money, belongs here.
+enum AdminActionType {
+  SUSPEND
+  UNSUSPEND
+  BLOCK
+  UNBLOCK
+  DELETE
+  RESTORE
+  PURGE
+  ROLE_GRANT
+  ROLE_REVOKE
+  PRO_COMP
+  LEAGUE_CREATE
+  LEAGUE_UPDATE
+  SYNC
+}
+
 /// How a manager came to hold Clashd Analysis.
 enum ProSource {
   NONE
@@ -63,6 +98,24 @@ model User {
   proProductId  String?
   proWillRenew  Boolean   @default(false)
 
+  // Account standing. Written only by the admin routes, read on every
+  // authenticated request through services/accountStatus.ts.
+  status         UserStatus @default(ACTIVE)
+  /// Shown to the person when they are turned away. Keep it factual and short.
+  statusReason   String?
+  /// Internal only. Never leaves the server.
+  statusNote     String?
+  statusAt       DateTime?
+  statusById     String?
+  /// A suspension that lifts by itself. Null means it holds until lifted.
+  suspendedUntil DateTime?
+  /// When a soft delete happened. The purge job counts the window from here.
+  deletedAt      DateTime?
+  /// Held so a soft delete can rename the account to "Former manager"
+  /// immediately, which makes every existing standings query correct with no
+  /// changes to it, and a restore can put the real name back exactly.
+  priorDisplayName String?
+
   entries       Entry[]
   notifications Notification[]
   createdLeagues League[] @relation("LeagueCreator")
@@ -71,7 +124,37 @@ model User {
   posts          Post[]
   billingEvents  BillingEvent[]
   clubPasses     ClubPass[]
+  auditActions   AdminAuditLog[] @relation("AuditActor")
+  @@index([status])
   @@map("users")
+}
+
+/// Every consequential admin action, written once and never changed. There is
+/// deliberately no route that updates or deletes a row here.
+///
+/// The actor's email and name, and a label for the target, are stored on the row
+/// rather than only joined: an audit log that becomes unreadable once an account
+/// is gone is not an audit log.
+model AdminAuditLog {
+  id          String          @id @default(uuid())
+  actorId     String?
+  actor       User?           @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorEmail  String
+  actorName   String
+  action      AdminActionType
+  /// USER, LEAGUE or SYSTEM.
+  targetType  String
+  targetId    String?
+  targetLabel String
+  /// What the admin typed as justification. Required for anything punitive.
+  reason      String?
+  /// Before and after values, or whatever else makes the row make sense later.
+  meta        Json?
+  createdAt   DateTime        @default(now())
+  @@index([createdAt])
+  @@index([action])
+  @@index([targetId])
+  @@map("admin_audit_log")
 }
 
 model League {
