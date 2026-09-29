@@ -80,17 +80,36 @@ const USER_LIST_FIELDS = {
    Overview
    ──────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * The overview numbers.
+ *
+ * `users` deliberately EXCLUDES deleted accounts. Deletion is soft now — the row
+ * survives so league history stays correct — but a deleted manager is not a
+ * registered manager, and counting them meant the admin panel's total could only
+ * ever go up. It also disagreed with the list directly beneath it, which hides
+ * deleted accounts. The count and the list now mean the same thing.
+ *
+ * `linked` is likewise live accounts only: a deleted manager's FPL team is not a
+ * linked team any more.
+ *
+ * The full breakdown including deleted accounts is still in `status`, and
+ * `usersIncludingDeleted` keeps the old total available for anyone who wants it.
+ */
 adminRouter.get("/stats", async (_req, res, next) => {
   try {
-    const [users, leagues, entries, syncs, linked, byStatus, pro] = await Promise.all([
-      prisma.user.count(),
-      prisma.league.count(),
-      prisma.entry.count(),
-      prisma.fplSync.findMany({ orderBy: { syncedAt: "desc" }, take: 10 }),
-      prisma.user.count({ where: { fplTeamId: { not: null } } }),
-      prisma.user.groupBy({ by: ["status"], _count: { _all: true } }),
-      prisma.user.count({ where: { proUntil: { gt: new Date() } } }),
-    ]);
+    const live = { status: { not: "DELETED" as const } };
+
+    const [users, usersIncludingDeleted, leagues, entries, syncs, linked, byStatus, pro] =
+      await Promise.all([
+        prisma.user.count({ where: live }),
+        prisma.user.count(),
+        prisma.league.count(),
+        prisma.entry.count(),
+        prisma.fplSync.findMany({ orderBy: { syncedAt: "desc" }, take: 10 }),
+        prisma.user.count({ where: { ...live, fplTeamId: { not: null } } }),
+        prisma.user.groupBy({ by: ["status"], _count: { _all: true } }),
+        prisma.user.count({ where: { ...live, proUntil: { gt: new Date() } } }),
+      ]);
 
     // Flattened into an object so the client does not have to hunt the array.
     const status: Record<string, number> = {
@@ -98,7 +117,10 @@ adminRouter.get("/stats", async (_req, res, next) => {
     };
     for (const row of byStatus) status[String(row.status)] = row._count._all;
 
-    res.json({ users, linked, leagues, entries, pro, status, recentSyncs: syncs });
+    res.json({
+      users, usersIncludingDeleted, linked, leagues, entries, pro, status,
+      recentSyncs: syncs,
+    });
   } catch (e) { next(e); }
 });
 
