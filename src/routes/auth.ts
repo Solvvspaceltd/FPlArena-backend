@@ -11,6 +11,7 @@ import {
   DEFAULT_REFUSAL,
   DEFAULT_REFUSAL_STATUS,
 } from "../services/accountStatus";
+import { trialEndFrom } from "../services/entitlements";
 import { AppError } from "../utils/AppError";
 
 export const authRouter = Router();
@@ -35,7 +36,16 @@ authRouter.post("/register", async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(body.password, 12);
     const user = await prisma.user.create({
-      data: { email: body.email, passwordHash, displayName: body.displayName },
+      data: {
+        email: body.email,
+        passwordHash,
+        displayName: body.displayName,
+        // Analysis free for a fortnight, starting now. Stored rather than
+        // computed from createdAt so extending somebody's trial is one field
+        // edit, and so changing the rule later cannot silently rewrite what
+        // existing accounts were already promised.
+        trialEndsAt: trialEndFrom(),
+      },
     });
 
     const token = sign(user.id);

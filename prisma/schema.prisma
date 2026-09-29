@@ -50,6 +50,7 @@ enum AdminActionType {
 /// How a manager came to hold Clashd Analysis.
 enum ProSource {
   NONE
+  TRIAL
   APPLE
   GOOGLE
   CLUB
@@ -60,6 +61,28 @@ enum LeagueStatus {
   UPCOMING
   ACTIVE
   COMPLETED
+}
+
+/// Whether a competition is being paid for, and what that means for its members.
+///
+/// This is separate from LeagueStatus on purpose. Status answers "where is this
+/// competition in its own life" (not started, running, finished). Access answers
+/// "is anybody paying for it". A league can be ACTIVE and FROZEN at once: the
+/// season is running, the table just stopped moving because nobody bought a pass.
+///
+/// FREE      Clashd's own competitions. Never paid for, never frozen.
+/// TRIAL     An imported group inside its free window.
+/// PAID      An imported group covered by a verified Club pass.
+/// FROZEN    The free window ended and nobody paid. Scoring stops; the table
+///           stays visible at the last completed gameweek. Reversible.
+/// ARCHIVED  Frozen for longer than the grace period. Hidden from members, data
+///           retained, still reversible by an admin.
+enum LeagueAccess {
+  FREE
+  TRIAL
+  PAID
+  FROZEN
+  ARCHIVED
 }
 
 // What scoring engine a league runs on. An admin can only create a league
@@ -93,6 +116,16 @@ model User {
 
   // Clashd Analysis. Written only by the RevenueCat webhook or an admin comp;
   // never by the app. Read through services/entitlements.ts, never directly.
+  /// Analysis is free for a fortnight from the day an account is made, with no
+  /// card and no purchase flow. Somebody has to feel what Analysis does before
+  /// being asked to pay for it, and a paywall in front of a product nobody has
+  /// used yet converts nobody.
+  ///
+  /// Null on accounts that predate this, which is deliberate: a null trial is
+  /// treated as no trial rather than as an open-ended one, so an old account
+  /// cannot quietly hold Analysis forever.
+  trialEndsAt   DateTime?
+
   proUntil      DateTime?
   proSource     ProSource @default(NONE)
   proProductId  String?
@@ -179,8 +212,31 @@ model League {
   asidePicks    AsidePick[]
   divisions     Division[]
   importedFromFplId Int?      @unique
+
+  /// Which imported suite this competition belongs to, as "fpl:<id>".
+  ///
+  /// An import creates nine competitions from one FPL mini-league, and a Club
+  /// pass covers the whole set. Until now the set was found by matching invite
+  /// codes on a shared prefix, which works until one league's code happens to be
+  /// a prefix of another's, at which point a payment would unfreeze the wrong
+  /// group. This makes the grouping explicit.
+  ///
+  /// Null for Clashd's own competitions, which belong to no suite.
+  importGroupId String?
+
+  /// Who is paying, and what members see. See the LeagueAccess enum.
+  access        LeagueAccess @default(FREE)
+  /// Last gameweek covered by the free window. Null for FREE competitions.
+  trialEndsGw   Int?
+  frozenAt      DateTime?
+  /// When a frozen suite becomes archived if still unpaid.
+  archiveDueAt  DateTime?
+  archivedAt    DateTime?
+
   pendingMembers PendingMember[]
   clubPasses    ClubPass[]
+  @@index([importGroupId])
+  @@index([access])
   @@map("leagues")
 }
 

@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import { fplService } from "../services/fpl";
 import { newContext, scoreForFormat, captainPointsForGw } from "../services/scoreFormats";
 import { io } from "../index";
+import { enforceAccess } from "../services/leagueAccess";
 
 export function startSyncJobs() {
   // Every 30 min — sync live scores
@@ -43,15 +44,50 @@ export async function activateDueLeagues(gw: number) {
   if (done.count) console.log(`[Sync] completed ${done.count} finished leagues`);
 }
 
-export async function syncScores() {
-  const gw = await fplService.getCurrentGameweek();
+/**
+ * Score a gameweek.
+ *
+ * `forGameweek` exists so a suite that was frozen can be caught up after it is
+ * paid for: without it, a league that missed GW8 to GW11 would come back with a
+ * hole in its table, which is worse than having paused honestly. Left out, this
+ * behaves exactly as it always has and scores the live gameweek.
+ *
+ * Re-scoring a past gameweek is safe. Scores are upserted on (entry, gameweek),
+ * and FPL's historical picks and points do not change once a gameweek is over,
+ * so running it again produces the same numbers.
+ */
+export async function syncScores(forGameweek?: number) {
+  const gw = forGameweek ?? (await fplService.getCurrentGameweek());
   if (!gw) return;
 
-  await activateDueLeagues(gw);
+  const live = forGameweek === undefined;
+
+  // Freezing, archiving and league activation belong to the live pass only.
+  // A backfill is filling in history; it must not decide anybody's fate.
+  if (live) {
+    await activateDueLeagues(gw);
+    try {
+      const enforced = await enforceAccess(gw);
+      if (enforced.frozen || enforced.archived) {
+        console.log(`[Access] froze ${enforced.frozen}, archived ${enforced.archived}`);
+      }
+    } catch (e) {
+      // Never let the paywall stop the scoring. An unpaid league scoring one
+      // gameweek too many is a rounding error; a failed sync is a dead product.
+      console.error("[Access] enforcement failed, scoring continues", e);
+    }
+  }
 
   const entries = await prisma.entry.findMany({
     where: {
-      league: { status: "ACTIVE", startGameweek: { lte: gw }, endGameweek: { gte: gw } },
+      league: {
+        status: "ACTIVE",
+        startGameweek: { lte: gw },
+        endGameweek: { gte: gw },
+        // Nobody is paying for these, so they do not get scored. Clashd's own
+        // competitions are FREE and always pass this.
+        access: { notIn: ["FROZEN", "ARCHIVED"] },
+      },
     },
     include: { user: { select: { id: true, fplTeamId: true } }, league: true },
   });

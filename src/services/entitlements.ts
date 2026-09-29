@@ -7,6 +7,7 @@
  *
  * Four ways to hold Analysis:
  *   PREVIEW  every account, while CLASHD_FREE_PREVIEW is on (pre-launch)
+ *   TRIAL    a new account's first fortnight, free and without a card
  *   APPLE    an App Store subscription, monthly or yearly
  *   GOOGLE   the same through Play
  *   COMP     granted by an admin (press, partners, support goodwill)
@@ -19,7 +20,16 @@
  */
 import { prisma } from "../utils/prisma";
 
-export type EntitlementSource = "PREVIEW" | "APPLE" | "GOOGLE" | "COMP" | "NONE";
+export type EntitlementSource =
+  | "PREVIEW" | "TRIAL" | "APPLE" | "GOOGLE" | "COMP" | "NONE";
+
+/** How long a new account gets Analysis free, with no card and no purchase. */
+export const TRIAL_DAYS = 14;
+
+/** The moment a trial starting now would end. */
+export function trialEndFrom(start: Date = new Date()): Date {
+  return new Date(start.getTime() + TRIAL_DAYS * 86_400_000);
+}
 
 export interface Entitlement {
   pro: boolean;
@@ -84,7 +94,10 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { proUntil: true, proSource: true, proProductId: true, proWillRenew: true },
+    select: {
+      proUntil: true, proSource: true, proProductId: true, proWillRenew: true,
+      trialEndsAt: true,
+    },
   });
   if (!user) return { ...NONE };
 
@@ -103,6 +116,14 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
   }
   if (user.proSource === "COMP" && !user.proUntil) {
     return { ...NONE, pro: true, source: "COMP" };
+  }
+
+  // The free fortnight. Checked after a real subscription so that somebody who
+  // pays during their trial is reported as a paying customer rather than as a
+  // trialist, which matters both for what the app tells them and for knowing
+  // how many people actually converted.
+  if (user.trialEndsAt && user.trialEndsAt > now) {
+    return { ...NONE, pro: true, source: "TRIAL", until: user.trialEndsAt };
   }
 
   // A Club pass does not grant Analysis. It is reported here only so the app

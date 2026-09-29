@@ -100,11 +100,20 @@ billingRouter.post("/club", authenticate, async (req: AuthRequest, res, next) =>
 
     const league = await prisma.league.findUnique({
       where: { id: body.leagueId },
-      select: { id: true, season: true, createdById: true },
+      select: { id: true, season: true, createdById: true, importGroupId: true },
     });
     if (!league) throw new AppError("League not found", 404);
-    if (league.createdById !== req.userId) {
-      throw new AppError("Only the manager who created this league can buy its Club pass", 403);
+
+    // Any member of the group may pay for it, not only whoever imported it.
+    // The person who set the league up is often not the one who would happily
+    // cover it, and a league dying because one specific person did not pay is a
+    // worse outcome than anyone in it being allowed to.
+    const member = await prisma.entry.findFirst({
+      where: { userId: req.userId!, leagueId: league.id },
+      select: { id: true },
+    });
+    if (!member && league.createdById !== req.userId) {
+      throw new AppError("You have to be in this league to buy its Club pass", 403);
     }
 
     const pass = await upsertClubPass({
@@ -254,6 +263,55 @@ async function applyClubEvent(event: any, userId: string, productId: string) {
     purchasedById: userId,
     verified: true,
   });
+
+  // The payment is banked. Restarting the suite and filling in the gameweeks it
+  // missed happens after we have replied: a webhook that waits on several FPL
+  // round trips is a webhook that times out and gets retried, and the retry
+  // would do all of this again.
+  restartAfterPayment(league.id).catch((e) =>
+    console.error("[club] restart after payment failed", e)
+  );
+}
+
+/**
+ * Bring a paid-for suite back to life.
+ *
+ * Deliberately separate from the webhook's own work so a slow catch-up can
+ * never cause a payment to be recorded twice. If this fails, the suite is still
+ * marked paid and the next live sync scores it going forward; only the gap
+ * remains, and an admin can re-run it.
+ */
+async function restartAfterPayment(leagueId: string) {
+  const league = await prisma.league.findUnique({
+    where: { id: leagueId },
+    select: { importGroupId: true },
+  });
+  if (!league?.importGroupId) return;
+
+  const { fplService } = await import("../services/fpl");
+  const { unfreezeGroup } = await import("../services/leagueAccess");
+  const { syncScores } = await import("../jobs/fplSync");
+
+  const currentGw = await fplService.getCurrentGameweek();
+  if (!currentGw) return;
+
+  const res = await unfreezeGroup(league.importGroupId, currentGw);
+  if (!res) return;
+
+  console.log(
+    `[club] restarted ${res.leagues} competitions, backfilling ${res.missedGameweeks.length} gameweeks`
+  );
+
+  // Ascending, ending on the live gameweek. Order matters: weekly formats set
+  // their total from the gameweek being scored, so the last pass has to be the
+  // current one or the table would show an old week's score as the standing.
+  for (const gw of res.missedGameweeks) {
+    try {
+      await syncScores(gw);
+    } catch (e) {
+      console.error(`[club] backfill of GW${gw} failed`, e);
+    }
+  }
 }
 
 /** A Club pass runs to the end of the season it was bought in: 30 June. */

@@ -6,6 +6,7 @@ import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { generateInviteCode } from "../utils/inviteCode";
 import { AppError } from "../utils/AppError";
+import { accessSummary } from "../services/leagueAccess";
 
 export const leaguesRouter = Router();
 
@@ -79,7 +80,18 @@ leaguesRouter.get("/:id", authenticate, async (req: AuthRequest, res, next) => {
       movement: e.previousRank ? e.previousRank - (i + 1) : 0,
     }));
 
-    res.json({ ...league, entries: undefined, leaderboard, entryCount: league._count.entries });
+    // An imported competition carries its group's paywall state, so a client
+    // can explain a paused table rather than showing one that mysteriously
+    // stopped moving. Null for Clashd's own competitions, which are always free.
+    const access = league.importGroupId
+      ? await accessSummary(league.importGroupId)
+      : null;
+
+    res.json({
+      ...league, entries: undefined, leaderboard,
+      entryCount: league._count.entries,
+      access,
+    });
   } catch (e) { next(e); }
 });
 
@@ -97,6 +109,9 @@ leaguesRouter.post("/join", authenticate, async (req: AuthRequest, res, next) =>
     const raw = String(inviteCode).trim();
     if (raw.toLowerCase().startsWith("i")) {
       const suite = await joinImportedSuite(req.userId!, raw);
+      // A group that is paused or full says so, rather than silently failing
+      // through to the single-league lookup below and reporting a bad code.
+      if ((suite as any).blocked) throw new AppError((suite as any).blocked, 403);
       if (suite.joined) {
         await prisma.notification.create({
           data: {

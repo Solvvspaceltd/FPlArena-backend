@@ -1,4 +1,5 @@
 import { prisma } from "../utils/prisma";
+import { groupIdFor, TRIAL_GAMEWEEKS, canJoin } from "./leagueAccess";
 import { clubBandFor, CLUB_PRODUCTS } from "./entitlements";
 import { fplService } from "./fpl";
 import { readLeagueBulk } from "./bulkSync";
@@ -144,6 +145,16 @@ export async function importMiniLeague(
         // Only the first carries the FPL link, so the league cannot be
         // imported twice and we know which one is the group's home table.
         ...(i === 0 ? { importedFromFplId: fplLeagueId } : {}),
+
+        // What the group is paying, and until when. Every competition in the
+        // suite carries the same values so any one of them can answer the
+        // question without a join, and so a partial write cannot leave half a
+        // suite on a different footing from the other half.
+        importGroupId: groupIdFor(fplLeagueId),
+        access: "TRIAL",
+        // Free through this gameweek. The suite starts at currentGw + offset,
+        // so a two-gameweek window ends one gameweek after it begins.
+        trialEndsGw: currentGw + def.startOffset + (TRIAL_GAMEWEEKS - 1),
         // Imported leagues are bragging rights only. A member-funded pot would
         // make Clashd a third-party money pool and reopen the gambling question.
         prizeInfo: null,
@@ -270,9 +281,17 @@ export async function joinImportedSuite(userId: string, inviteCode: string) {
 
   const leagues = await prisma.league.findMany({
     where: { inviteCode: { startsWith: prefix }, status: "ACTIVE" },
-    select: { id: true, name: true },
+    select: { id: true, name: true, importGroupId: true },
   });
   if (!leagues.length) return { joined: 0 };
+
+  // Whether this group is taking new members. Checked before a single entry is
+  // written, so nobody ends up half-joined to a suite that will not score them.
+  const groupId = leagues.find((l) => l.importGroupId)?.importGroupId;
+  if (groupId) {
+    const gate = await canJoin(groupId);
+    if (!gate.ok) return { joined: 0, blocked: gate.reason };
+  }
 
   let joined = 0;
   for (const l of leagues) {
@@ -300,7 +319,7 @@ export async function joinImportedSuite(userId: string, inviteCode: string) {
     });
   }
 
-  return { joined, competitions: leagues.length };
+  return { joined, competitions: leagues.length, blocked: undefined as string | undefined };
 }
 
 

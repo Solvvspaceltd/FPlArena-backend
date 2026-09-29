@@ -7,6 +7,7 @@ import {
   importMiniLeague,
   importedLeagueSummary,
 } from "../services/leagueImport";
+import { accessSummary } from "../services/leagueAccess";
 
 export const importRouter = Router();
 
@@ -94,7 +95,18 @@ importRouter.post("/", authenticate, async (req: AuthRequest, res, next) => {
 importRouter.get("/:leagueId/summary", authenticate, async (req: AuthRequest, res, next) => {
   try {
     const summary = await importedLeagueSummary(req.params.leagueId);
-    res.json(summary);
+
+    // The paywall state travels with the summary, so the screen that shows a
+    // group its membership also shows whether that group is paid for.
+    const league = await prisma.league.findUnique({
+      where: { id: req.params.leagueId },
+      select: { importGroupId: true },
+    });
+    const access = league?.importGroupId
+      ? await accessSummary(league.importGroupId)
+      : null;
+
+    res.json({ ...summary, access });
   } catch (e) {
     next(e);
   }
