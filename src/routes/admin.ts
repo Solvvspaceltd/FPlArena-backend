@@ -115,9 +115,24 @@ adminRouter.get("/stats", async (_req, res, next) => {
  *
  * Soft-deleted accounts are hidden unless asked for. An admin looking at "the
  * users" means the live ones.
+ *
+ * TWO RESPONSE SHAPES, on purpose.
+ *
+ * This endpoint used to return a bare array, and the iOS app already in people's
+ * hands iterates exactly that. Changing it to a paginated object broke the app's
+ * Admin panel outright — it cannot be fixed by changing the client, because the
+ * client is already installed on phones.
+ *
+ * So: a caller that asks for a page gets the paginated object, and a caller that
+ * asks for nothing gets the old array. The web Admin tab always sends `page`, so
+ * it always gets the object. The shipped app sends nothing and keeps working.
+ *
+ * This asymmetry is a wart. It stays until no build in the wild calls the bare
+ * endpoint, and then the array branch can go.
  */
 adminRouter.get("/users", async (req: any, res, next) => {
   try {
+    const wantsPage = req.query.page !== undefined || req.query.perPage !== undefined;
     const perPage = Math.min(Math.max(parseInt(String(req.query.perPage ?? 50), 10) || 50, 1), 200);
     const page = Math.max(parseInt(String(req.query.page ?? 1), 10) || 1, 1);
     const q = String(req.query.q ?? "").trim();
@@ -150,11 +165,15 @@ adminRouter.get("/users", async (req: any, res, next) => {
         where,
         select: USER_LIST_FIELDS as any,
         orderBy: { createdAt: "desc" },
-        skip: (page - 1) * perPage,
-        take: perPage,
+        // The legacy caller gets everything, capped so a large account list can
+        // never become an unbounded response.
+        skip: wantsPage ? (page - 1) * perPage : 0,
+        take: wantsPage ? perPage : 500,
       }),
       prisma.user.count({ where }),
     ]);
+
+    if (!wantsPage) return res.json(rows);
 
     res.json({
       rows,
@@ -414,7 +433,14 @@ adminRouter.patch("/users/:id/status", async (req: any, res, next) => {
  */
 adminRouter.delete("/users/:id", async (req: any, res, next) => {
   try {
-    const why = requireReason(req.body?.reason ?? req.query?.reason, "delete");
+    // The web Admin tab always sends a reason and refuses to submit without one.
+    // The iOS app already in people's hands does not, and refusing it here would
+    // break a button that works today. So the reason is recorded either way, and
+    // its absence is recorded honestly rather than the delete being blocked.
+    const given = typeof req.body?.reason === "string" ? req.body.reason.trim()
+                : typeof req.query?.reason === "string" ? String(req.query.reason).trim()
+                : "";
+    const why = given ? given.slice(0, 500) : "No reason given (deleted from the app).";
     const target = await loadTarget(req.params.id);
     refuseSelf(target, req.userId, "delete");
     refuseAdmin(target);
