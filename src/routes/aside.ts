@@ -94,19 +94,35 @@ asideRouter.get("/squad/:leagueId", authenticate, async (req: AuthRequest, res, 
 
     const playerMap = await fplService.getPlayerMap();
     const rawPicks: any[] = snapshot.picks as any[];
+
+    // FPL numbers a manager's picks 1 to 15: 1-11 is the side that started and
+    // 12-15 is the bench, in the order the subs would come on. That ordering was
+    // discarded here, which left the app with no way to tell a starter from a
+    // substitute - every squad arrived as one flat list. Carrying it through
+    // costs nothing and is what lets the pitch draw a bench.
+    //
+    // Note the name clash: `p.position` is the 1-15 pick order, while
+    // `meta.position` is the FPL element_type (1=GK 2=DEF 3=MID 4=FWD).
     const squad = rawPicks
       .map((p) => {
         const meta = playerMap[p.element];
         if (!meta) return null;
+        const fplOrder = Number(p.position) || 0;
         return {
           id: meta.id,
           name: meta.name,
           team: meta.team,
           position: meta.position,
           slot: SLOT_BY_TYPE[meta.position],
+          fplOrder,
+          startedForFpl: fplOrder > 0 && fplOrder <= 11,
+          benchOrder: fplOrder > 11 ? fplOrder - 11 : null,
+          isCaptain: !!p.is_captain,
+          isViceCaptain: !!p.is_vice_captain,
         };
       })
-      .filter(Boolean);
+      .filter((x: any) => !!x)
+      .sort((a: any, b: any) => a.fplOrder - b.fplOrder);
 
     const existing = await prisma.asidePick.findUnique({
       where: {
