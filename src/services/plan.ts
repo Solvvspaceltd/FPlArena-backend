@@ -125,7 +125,7 @@ function buildMatch(me: Side, opp: Side, proj: Projections) {
     themTotal += f.next * b;
     variance += f.variance * (a - b) * (a - b);
     if (a > 0 && b > 0) {
-      shared.push({ name: f.name, xp: round1(f.next) });
+      shared.push({ name: f.name, team: f.teamShort, xp: round1(f.next) });
       sharedBase += f.next;
     }
     const row = { id, name: f.name, team: f.teamShort, fixture: fixtureLabel(f), captain: false, xp: 0 };
@@ -182,6 +182,14 @@ function buildMatch(me: Side, opp: Side, proj: Projections) {
     myCaptain: myCap ? proj.players[myCap.element]?.name || null : null,
     theirCaptain: theirCap ? proj.players[theirCap.element]?.name || null : null,
     theirCaptainId: theirCap?.element || null,
+    // The club and the captained forecast for each armband, so the app can draw
+    // the two kits side by side instead of printing two names.
+    myCaptainTeam: myCap ? proj.players[myCap.element]?.teamShort || null : null,
+    theirCaptainTeam: theirCap ? proj.players[theirCap.element]?.teamShort || null : null,
+    myCaptainXp: myCap && proj.players[myCap.element]
+      ? round1(proj.players[myCap.element].next * (mm.get(myCap.element) || 2)) : null,
+    theirCaptainXp: theirCap && proj.players[theirCap.element]
+      ? round1(proj.players[theirCap.element].next * (tm.get(theirCap.element) || 2)) : null,
   };
 }
 
