@@ -21,6 +21,7 @@ import {
   getEntitlement, freePreview, PRO_PRODUCTS, CLUB_PRODUCTS,
   clubBandFor, isProProduct, isClubProduct,
 } from "../services/entitlements";
+import { sendOnce } from "../services/push";
 
 export const billingRouter = Router();
 
@@ -373,5 +374,74 @@ billingRouter.post("/comp", authenticate, requireAdmin, async (req: AuthRequest,
         : { proSource: "NONE" as any, proUntil: null, proProductId: null, proWillRenew: false },
     });
     res.json({ ok: true, entitlement: await getEntitlement(body.userId) });
+  } catch (err) { next(err); }
+});
+
+/* -- one-off trial backfill ----------------------------------------------
+   Every account from the free preview has trialEndsAt = null, because nothing
+   ever set it: access came from CLASHD_FREE_PREVIEW instead. The second that
+   flag goes false those accounts have no trial, no subscription and no comp,
+   so every one of them hits the paywall at once with no warning.
+
+   Idempotent by construction: it only writes rows where trialEndsAt is still
+   null, so running it twice cannot extend anybody twice. Run it BEFORE
+   flipping the flag, never after.                                          */
+
+const MONTHS = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+const longDate = (d: Date) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+
+billingRouter.post("/trial-backfill", authenticate, requireAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    const body = z.object({
+      days: z.number().int().min(1).max(365).default(30),
+      dryRun: z.boolean().default(true),
+      notify: z.boolean().default(false),
+    }).parse(req.body ?? {});
+
+    const now = new Date();
+    const until = new Date(now.getTime() + body.days * 86_400_000);
+
+    const candidates = await prisma.user.findMany({
+      where: {
+        trialEndsAt: null,
+        status: "ACTIVE" as any,
+        deletedAt: null,
+        OR: [{ proUntil: null }, { proUntil: { lte: now } }],
+      },
+      select: { id: true, email: true, displayName: true, fplTeamName: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    if (body.dryRun) {
+      return res.json({
+        dryRun: true, days: body.days, until, count: candidates.length,
+        users: candidates.map((u) => ({
+          id: u.id, email: u.email, name: u.fplTeamName || u.displayName,
+        })),
+      });
+    }
+
+    const written = await prisma.user.updateMany({
+      where: { id: { in: candidates.map((u) => u.id) }, trialEndsAt: null },
+      data: { trialEndsAt: until },
+    });
+
+    let notified = 0;
+    if (body.notify) {
+      for (const u of candidates) {
+        const ok = await sendOnce(
+          u.id,
+          "trial-backfill-" + until.toISOString().slice(0, 10),
+          "results",
+          `Analysis is yours until ${longDate(until)}`,
+          `Analysis has been free while Clashd was in preview. It is a paid product from now on, and your account keeps it free for another ${body.days} days.`,
+          { screen: "ANALYSIS" },
+        ).catch(() => false);
+        if (ok) notified++;
+      }
+    }
+
+    res.json({ ok: true, days: body.days, until, granted: written.count, notified });
   } catch (err) { next(err); }
 });
