@@ -252,6 +252,81 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       }
     }
 
+    // This week's head-to-head in EVERY league, not just the first one found.
+    // nextFixture above answers "who do I play" once for the whole account,
+    // which is wrong for anybody in more than one division: Home could only
+    // ever show one of their fixtures, so an imported group's match was
+    // invisible unless it happened to be the one that query landed on.
+    //
+    // Two bulk queries, not one per league, for the same reason the standings
+    // above are ranked in memory rather than counted per league.
+    if (myEntryIds.length) {
+      const entryToLeague = new Map<string, string>();
+      for (const e of entries) entryToLeague.set(e.id, e.leagueId);
+
+      const open = await prisma.fixture.findMany({
+        where: {
+          settled: false,
+          OR: [
+            { homeEntryId: { in: myEntryIds } },
+            { awayEntryId: { in: myEntryIds } },
+          ],
+        },
+        orderBy: { gameweek: "asc" },
+        include: {
+          homeEntry: { include: { user: { select: { displayName: true, fplTeamName: true } } } },
+          awayEntry: { include: { user: { select: { displayName: true, fplTeamName: true } } } },
+        },
+      });
+
+      // Every opponent's live score for this gameweek, in one query.
+      const oppIds = Array.from(new Set(
+        open
+          .filter((f) => f.gameweek === currentGameweek)
+          .map((f) => (myEntryIds.includes(f.homeEntryId) ? f.awayEntryId : f.homeEntryId))
+          .filter((id): id is string => !!id)
+      ));
+      const oppScores = new Map<string, number>();
+      if (oppIds.length) {
+        const rows = await prisma.gwScore.findMany({
+          where: { gameweek: currentGameweek, entryId: { in: oppIds } },
+          orderBy: { syncedAt: "desc" },
+          select: { entryId: true, points: true },
+        });
+        for (const r of rows) {
+          if (!oppScores.has(r.entryId)) oppScores.set(r.entryId, r.points);
+        }
+      }
+
+      // The earliest open fixture per league. `open` is already ordered by
+      // gameweek, so the first one seen for a league is the one to show.
+      const byLeagueFixture = new Map<string, any>();
+      for (const f of open) {
+        const mineIsHome = myEntryIds.includes(f.homeEntryId);
+        const myEntryId = mineIsHome ? f.homeEntryId : f.awayEntryId;
+        const leagueId = myEntryId ? entryToLeague.get(myEntryId) : null;
+        if (!leagueId || byLeagueFixture.has(leagueId)) continue;
+
+        const oppEntry = mineIsHome ? f.awayEntry : f.homeEntry;
+        const oppEntryId = mineIsHome ? f.awayEntryId : f.homeEntryId;
+        const live = f.gameweek === currentGameweek;
+
+        byLeagueFixture.set(leagueId, {
+          gameweek: f.gameweek,
+          opponent: oppEntry
+            ? oppEntry.user.fplTeamName || oppEntry.user.displayName
+            : "Bye",
+          live,
+          myScore: live ? gameweekPoints : null,
+          opponentScore: live && oppEntryId ? oppScores.get(oppEntryId) ?? null : null,
+        });
+      }
+
+      for (const l of leagues as any[]) {
+        l.fixture = byLeagueFixture.get(l.leagueId) || null;
+      }
+    }
+
     // Last few settled results, for a form strip.
     let form: string[] = [];
     if (myEntryIds.length) {
