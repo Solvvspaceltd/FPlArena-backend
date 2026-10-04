@@ -149,7 +149,14 @@ model User {
   /// changes to it, and a restore can put the real name back exactly.
   priorDisplayName String?
 
+  /// Stamped every time the password changes. Not yet enforced against tokens
+  /// issued before it - that needs a check inside the per-request standing
+  /// cache - but recorded from the start so enforcement can be switched on
+  /// later without a migration.
+  passwordChangedAt DateTime?
+
   entries       Entry[]
+  passwordResets PasswordReset[]
   notifications Notification[]
   createdLeagues League[] @relation("LeagueCreator")
   asidePicks     AsidePick[]
@@ -495,4 +502,28 @@ model BillingEvent {
   @@index([userId])
   @@index([type])
   @@map("billing_events")
+}
+
+/// A single-use password reset code.
+///
+/// The code itself is never stored, only its SHA-256 hash, so a leaked
+/// database row cannot be turned into an account takeover. Rows are kept after
+/// use as a record that a reset happened and who raised it.
+model PasswordReset {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the code that was handed out. The code is shown once, to the
+  /// admin who issued it, and never again.
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  /// The admin who issued it, when a reset came through support rather than
+  /// from the person themselves.
+  issuedById String?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_resets")
 }
