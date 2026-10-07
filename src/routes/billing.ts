@@ -366,12 +366,17 @@ billingRouter.post("/comp", authenticate, requireAdmin, async (req: AuthRequest,
       until: z.string().datetime().optional(),
     }).parse(req.body);
 
+    // Revoking takes the trial with it. Without that there is no way to put an
+    // account back to having nothing: a revoked comp still leaves the free
+    // fortnight standing, so the paywall stays invisible and nobody - support
+    // or us - can ever see what a non-paying manager actually sees.
     await prisma.user.update({
       where: { id: body.userId },
       data: body.grant
         ? { proSource: "COMP" as any, proUntil: body.until ? new Date(body.until) : null,
             proProductId: null, proWillRenew: false }
-        : { proSource: "NONE" as any, proUntil: null, proProductId: null, proWillRenew: false },
+        : { proSource: "NONE" as any, proUntil: null, proProductId: null, proWillRenew: false,
+            trialEndsAt: new Date(0) },
     });
     res.json({ ok: true, entitlement: await getEntitlement(body.userId) });
   } catch (err) { next(err); }
