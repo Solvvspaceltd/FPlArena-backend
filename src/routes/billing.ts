@@ -21,6 +21,7 @@ import {
   getEntitlement, freePreview, PRO_PRODUCTS, CLUB_PRODUCTS,
   clubBandFor, isProProduct, isClubProduct,
 } from "../services/entitlements";
+import { seatCountFor } from "../services/leagueAccess";
 import { sendOnce } from "../services/push";
 
 export const billingRouter = Router();
@@ -43,7 +44,7 @@ billingRouter.get("/me", authenticate, async (req: AuthRequest, res, next) => {
           price: money(PRO_PRODUCTS.clashd_pro_yearly.pence), pence: 2999,
           note: "Two months free against the monthly price", trialDays: 7 },
       ],
-      club: Object.entries(CLUB_PRODUCTS).map(([productId, b]) => ({
+      clubBands: Object.entries(CLUB_PRODUCTS).map(([productId, b]) => ({
         productId, seats: b.seats, price: money(b.pence), pence: b.pence,
       })),
     });
@@ -56,12 +57,28 @@ billingRouter.get("/club/:leagueId", authenticate, async (req: AuthRequest, res,
   try {
     const league = await prisma.league.findUnique({
       where: { id: req.params.leagueId },
-      select: { id: true, name: true, season: true, createdById: true, _count: { select: { entries: true } } },
+      select: { id: true, name: true, season: true, createdById: true, importGroupId: true },
     });
     if (!league) throw new AppError("League not found", 404);
 
-    const managers = league._count.entries;
+    // Seats are counted the way leagueAccess counts them: distinct managers
+    // across the whole imported suite, plus the ones still to join from FPL.
+    // Quoting from one competition's entry count undersold the band, so a
+    // group could buy ten seats, be fourteen people, and find canJoin() shut
+    // the door on them the moment the pass went live.
+    const seats = league.importGroupId
+      ? await seatCountFor(league.importGroupId)
+      : { members: 0, pending: 0, total: 0 };
+    const managers = seats.total;
     const band = clubBandFor(managers);
+
+    // Anyone in the league may buy its pass, which is what POST /club has
+    // always enforced. The quote used to say only the importer could, so the
+    // button was hidden from the people most likely to pay.
+    const isMember = await prisma.entry.findFirst({
+      where: { userId: req.userId!, leagueId: league.id },
+      select: { id: true },
+    });
     const existing = await prisma.clubPass.findUnique({
       where: { leagueId_season: { leagueId: league.id, season: league.season } },
     });
@@ -71,7 +88,8 @@ billingRouter.get("/club/:leagueId", authenticate, async (req: AuthRequest, res,
       leagueName: league.name,
       season: league.season,
       managers,
-      canBuy: league.createdById === req.userId,
+      canBuy: !!league.importGroupId && (!!isMember || league.createdById === req.userId),
+      notYetJoined: seats.pending,
       band: band
         ? { productId: band.productId, seats: band.seats, price: money(band.pence), pence: band.pence }
         : null,
