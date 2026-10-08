@@ -38,6 +38,23 @@ import { clubBandFor } from "./entitlements";
 /** Gameweeks an imported suite runs free before it needs a pass. */
 export const TRIAL_GAMEWEEKS = 2;
 
+/**
+ * Importing is free.
+ *
+ * The Club pass model below is intact and works; it is simply switched off.
+ * Bringing your mates onto Clashd is the thing that makes the product worth
+ * anything, and charging for it closed the front door. Analysis is what people
+ * pay for now.
+ *
+ * Nothing here is deleted, because the decision is reversible: set
+ * CLASHD_IMPORT_FREE=false on Railway and the trial, the freeze, the grace
+ * period and the pass all come back exactly as they were. Deleting it tonight
+ * to rebuild it in the spring would be the expensive version of this.
+ */
+export function importsFree(): boolean {
+  return (process.env.CLASHD_IMPORT_FREE ?? "true").toLowerCase() !== "false";
+}
+
 /** Days a frozen suite waits before it is archived. */
 export const GRACE_DAYS = 14;
 
@@ -254,6 +271,10 @@ export async function archiveGroup(importGroupId: string) {
 export async function enforceAccess(currentGameweek: number) {
   const out = { frozen: 0, archived: 0 };
 
+  // While importing is free nothing is frozen for not paying. An admin can
+  // still archive a group by hand; that is a separate decision and stays.
+  if (importsFree()) return out;
+
   // 1. Trials that have run out.
   const trials = await prisma.league.findMany({
     where: {
@@ -337,6 +358,10 @@ export async function canJoin(importGroupId: string): Promise<{
   if (access === "ARCHIVED") {
     return { ok: false, reason: "This group is no longer running on Clashd." };
   }
+
+  // Free imports: no pass, so no seat limit and nothing to be frozen for.
+  if (importsFree()) return { ok: true };
+
   if (access === "FROZEN") {
     return {
       ok: false,

@@ -32,8 +32,8 @@ function leagueId(): number | null {
   return isNaN(id) ? null : id;
 }
 
-async function loadMembers(): Promise<Member[]> {
-  if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.members;
+async function loadMembers(force = false): Promise<Member[]> {
+  if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.members;
 
   const id = leagueId();
   if (!id) throw new AppError("Team lookup is not configured yet.", 503);
@@ -50,20 +50,25 @@ async function loadMembers(): Promise<Member[]> {
   // Managers who have joined but are not yet in the standings live under
   // new_entries. Before a gameweek has been scored — which includes the whole
   // pre-season — that is where EVERY member sits, so both must be read.
+  // Standings and new entries are paged separately by FPL. Walking them on one
+  // shared counter stopped at whichever ran out first, so in a league with more
+  // than fifty members the newest joiners - exactly the people using this
+  // screen - could be the ones left out.
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const data = await fplService.getLeagueStandings(id, page, page);
-
+    const data = await fplService.getLeagueStandings(id, page, 1);
     for (const r of data?.standings?.results || []) {
       add(r.entry, r.entry_name, r.player_name);
     }
+    if (!data?.standings?.has_next) break;
+  }
 
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const data = await fplService.getLeagueStandings(id, 1, page);
     for (const r of data?.new_entries?.results || []) {
       const name = [r.player_first_name, r.player_last_name].filter(Boolean).join(" ");
       add(r.entry, r.entry_name, name);
     }
-
-    const more = data?.standings?.has_next || data?.new_entries?.has_next;
-    if (!more) break;
+    if (!data?.new_entries?.has_next) break;
   }
 
   cache = { at: Date.now(), members };
@@ -82,16 +87,28 @@ fplRouter.get("/find", authenticate, async (req: AuthRequest, res, next) => {
       return next(new AppError("Type at least two characters to search.", 400));
     }
 
-    const members = await loadMembers();
-    const matches = members
-      .filter(
-        (m) =>
-          m.teamName.toLowerCase().includes(q) ||
-          m.managerName.toLowerCase().includes(q)
-      )
-      .slice(0, 25);
+    const match = (list: Member[]) =>
+      list
+        .filter(
+          (m) =>
+            m.teamName.toLowerCase().includes(q) ||
+            m.managerName.toLowerCase().includes(q)
+        )
+        .slice(0, 25);
 
-    res.json({ count: matches.length, results: matches });
+    let matches = match(await loadMembers());
+
+    // Somebody who joined the Clashd league a minute ago is not in the cache
+    // yet, so the search that brought them here finds nothing and the screen
+    // tells them to go and join - which they have just done. One forced
+    // re-read on a miss costs a single FPL call and removes the dead end.
+    let refreshed = false;
+    if (!matches.length && cache && Date.now() - cache.at > 20_000) {
+      matches = match(await loadMembers(true));
+      refreshed = true;
+    }
+
+    res.json({ count: matches.length, results: matches, refreshed });
   } catch (e) {
     next(e);
   }

@@ -1,5 +1,5 @@
 import { prisma } from "../utils/prisma";
-import { groupIdFor, TRIAL_GAMEWEEKS, canJoin } from "./leagueAccess";
+import { groupIdFor, TRIAL_GAMEWEEKS, canJoin, importsFree } from "./leagueAccess";
 import { clubBandFor, CLUB_PRODUCTS } from "./entitlements";
 import { fplService } from "./fpl";
 import { readLeagueBulk } from "./bulkSync";
@@ -151,7 +151,7 @@ export async function importMiniLeague(
         // question without a join, and so a partial write cannot leave half a
         // suite on a different footing from the other half.
         importGroupId: groupIdFor(fplLeagueId),
-        access: "TRIAL",
+        access: importsFree() ? "FREE" : "TRIAL",
         // Free through this gameweek. The suite starts at currentGw + offset,
         // so a two-gameweek window ends one gameweek after it begins.
         trialEndsGw: currentGw + def.startOffset + (TRIAL_GAMEWEEKS - 1),

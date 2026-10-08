@@ -10,6 +10,43 @@ import { accessSummary } from "../services/leagueAccess";
 
 export const leaguesRouter = Router();
 
+/**
+ * How many distinct managers may play in Clashd's own competitions.
+ *
+ * Signing up is not capped, and neither is importing your own mini-league -
+ * bring as many people as you like, those leagues are yours. This is a limit on
+ * the competitions Clashd runs and funds prizes for, so the cost of running
+ * them is known in advance rather than discovered.
+ *
+ * Counted across all of them together, not per competition: somebody in six
+ * Clashd leagues is one person, and the figure that matters is how many people
+ * we are on the hook for.
+ */
+const CLASHD_PLAYER_CAP = parseInt(process.env.CLASHD_PLAYER_CAP || "1000", 10);
+
+/** Distinct managers currently in any Clashd-run competition. */
+async function clashdPlayerCount(): Promise<number> {
+  const own = await prisma.league.findMany({
+    where: { importGroupId: null },
+    select: { id: true },
+  });
+  if (!own.length) return 0;
+  const players = await prisma.entry.findMany({
+    where: { leagueId: { in: own.map((l) => l.id) } },
+    select: { userId: true },
+    distinct: ["userId"],
+  });
+  return players.length;
+}
+
+/** Exposed so the app can show how many places are left rather than guess. */
+leaguesRouter.get("/capacity", authenticate, async (_req, res, next) => {
+  try {
+    const used = await clashdPlayerCount();
+    res.json({ used, cap: CLASHD_PLAYER_CAP, remaining: Math.max(0, CLASHD_PLAYER_CAP - used) });
+  } catch (e) { next(e); }
+});
+
 // Browse all leagues (authenticated users)
 leaguesRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
   try {
@@ -136,6 +173,28 @@ leaguesRouter.post("/join", authenticate, async (req: AuthRequest, res, next) =>
       where: { userId_leagueId: { userId: req.userId!, leagueId: league.id } },
     });
     if (existing) throw new AppError("Already in this league", 409);
+
+    // The cap applies to Clashd's own competitions only. An imported league is
+    // the group's own and never counts against it. Somebody already playing in
+    // another Clashd competition is already counted, so joining a second one is
+    // always allowed - the limit is on people, not entries.
+    if (!league.importGroupId) {
+      const alreadyPlaying = await prisma.entry.findFirst({
+        where: { userId: req.userId!, league: { importGroupId: null } },
+        select: { id: true },
+      });
+      if (!alreadyPlaying) {
+        const used = await clashdPlayerCount();
+        if (used >= CLASHD_PLAYER_CAP) {
+          throw new AppError(
+            `Clashd's own competitions are full for this season - ${CLASHD_PLAYER_CAP} ` +
+            `managers. You can still import your own mini-league and play that with ` +
+            `your group, and there is no limit on those.`,
+            403
+          );
+        }
+      }
+    }
 
     const entry = await prisma.entry.create({
       data: { userId: req.userId!, leagueId: league.id },
