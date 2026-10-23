@@ -160,6 +160,8 @@ model User {
   notifications Notification[]
   createdLeagues League[] @relation("LeagueCreator")
   asidePicks     AsidePick[]
+  asideChallengesSent     AsideChallenge[] @relation("AsideChallenger")
+  asideChallengesReceived AsideChallenge[] @relation("AsideOpponent")
   squadSnapshots SquadSnapshot[]
   posts          Post[]
   billingEvents  BillingEvent[]
@@ -217,6 +219,7 @@ model League {
   entries       Entry[]
   gwScores      GwScore[]
   asidePicks    AsidePick[]
+  asideChallenges AsideChallenge[]
   divisions     Division[]
   importedFromFplId Int?      @unique
 
@@ -526,4 +529,65 @@ model PasswordReset {
   @@index([userId])
   @@index([expiresAt])
   @@map("password_resets")
+}
+
+
+/// How a one-against-one in an Aside competition stands.
+///
+///   PENDING   asked for, not yet answered
+///   ACCEPTED  on, and locked in once the deadline passes
+///   DECLINED  turned down
+///   SETTLED   both sides scored and a result recorded
+///   VOID      one of them never picked a side, so there is no honest result
+enum AsideChallengeStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  SETTLED
+  VOID
+}
+
+/// One manager against another, for a single gameweek of one Aside
+/// competition.
+///
+/// Aside on its own is solitaire: you pick a side, you get a number, and the
+/// table tells you where that number came. This is the other way to play it -
+/// your five against somebody else's five, in a competition you are both
+/// already in.
+///
+/// Both sides stay secret until the deadline, so a challenge is made blind. It
+/// has to be asked for AND accepted before the deadline; after that neither
+/// could be answering honestly. If either manager never picks a side the
+/// result is voided rather than awarded, because a win against somebody who
+/// forgot is not worth having and farming dormant accounts would be the first
+/// thing anyone tried.
+model AsideChallenge {
+  id           String   @id @default(uuid())
+  leagueId     String
+  league       League   @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  gameweek     Int
+
+  challengerId String
+  challenger   User     @relation("AsideChallenger", fields: [challengerId], references: [id])
+  opponentId   String
+  opponent     User     @relation("AsideOpponent", fields: [opponentId], references: [id])
+
+  status       AsideChallengeStatus @default(PENDING)
+
+  /// Written once by the scoring job. Null until the gameweek has run.
+  challengerScore Int?
+  opponentScore   Int?
+
+  respondedAt  DateTime?
+  settledAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  /// One challenge per pair per gameweek per competition, whichever way round
+  /// it was asked. The handler checks the reverse direction too, since the
+  /// database cannot express that on its own.
+  @@unique([leagueId, gameweek, challengerId, opponentId])
+  @@index([leagueId, gameweek])
+  @@index([opponentId, status])
+  @@index([challengerId, status])
+  @@map("aside_challenges")
 }

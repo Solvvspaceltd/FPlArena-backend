@@ -145,6 +145,13 @@ asideRouter.get("/squad/:leagueId", authenticate, async (req: AuthRequest, res, 
       formation: formationFor(league),
       squad,
       selection: existing ? (existing.playerIds as number[]) : [],
+      // The side's total, so the team view can show what it is worth without
+      // a second request. Written by the scoring job once the gameweek runs;
+      // zero and unscored until then, which is the honest state rather than a
+      // blank.
+      score: existing ? existing.score : 0,
+      scored: existing ? !!existing.scoredAt : false,
+      invalidCount: existing ? existing.invalidCount : 0,
     });
   } catch (e) {
     next(e);
@@ -276,4 +283,274 @@ asideRouter.get("/leaderboard/:leagueId", authenticate, async (req: AuthRequest,
   } catch (e) {
     next(e);
   }
+});
+
+/* -- one against one -------------------------------------------------------
+
+   Aside on its own is solitaire: pick a side, get a number, see where the
+   number came. This is the other way to play it - your five against one other
+   manager's five, inside a competition you are both already in.
+
+   Both sides are blind. Picks are secret until the deadline, and a challenge
+   has to be asked for and accepted before it, so nobody is answering with
+   knowledge of the other team. After the gameweek is scored the result is
+   settled from the two Aside scores, and the running record between those two
+   managers is what makes it worth playing twice.
+
+     GET  /api/aside/challenges/:leagueId     mine this gameweek, plus who is
+                                              left to challenge
+     POST /api/aside/challenge                ask for one
+     POST /api/aside/challenge/:id/respond    accept or decline
+                                                                            */
+
+/** The gameweek a challenge would be for, and whether it is still open. */
+async function challengeWindow() {
+  const next_ = await fplService.getNextGameweek();
+  if (!next_) return null;
+  return {
+    gameweek: next_.id,
+    deadline: next_.deadline,
+    locked: new Date(next_.deadline).getTime() <= Date.now(),
+  };
+}
+
+/** Settled results between two managers, from whichever side asked. */
+async function recordBetween(leagueId: string, a: string, b: string) {
+  const rows = await prisma.asideChallenge.findMany({
+    where: {
+      leagueId,
+      status: "SETTLED",
+      OR: [
+        { challengerId: a, opponentId: b },
+        { challengerId: b, opponentId: a },
+      ],
+    },
+    select: { challengerId: true, challengerScore: true, opponentScore: true },
+  });
+
+  let won = 0, drew = 0, lost = 0;
+  for (const r of rows) {
+    const mine = r.challengerId === a ? r.challengerScore : r.opponentScore;
+    const theirs = r.challengerId === a ? r.opponentScore : r.challengerScore;
+    if (mine == null || theirs == null) continue;
+    if (mine > theirs) won++;
+    else if (mine < theirs) lost++;
+    else drew++;
+  }
+  return { won, drew, lost, played: won + drew + lost };
+}
+
+function who(u: any) {
+  return { id: u.id, name: u.fplTeamName || u.displayName, manager: u.displayName };
+}
+
+asideRouter.get("/challenges/:leagueId", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    const league = await prisma.league.findUnique({ where: { id: req.params.leagueId } });
+    if (!league) return next(new AppError("League not found.", 404));
+    if (!ASIDE_FORMATS.includes(league.format)) {
+      return next(new AppError("This competition does not play one against one.", 400));
+    }
+
+    const win = await challengeWindow();
+    if (!win) return next(new AppError("No upcoming gameweek available.", 503));
+
+    const me = req.userId!;
+
+    const mine = await prisma.asideChallenge.findMany({
+      where: {
+        leagueId: league.id,
+        OR: [{ challengerId: me }, { opponentId: me }],
+      },
+      include: {
+        challenger: { select: { id: true, displayName: true, fplTeamName: true } },
+        opponent: { select: { id: true, displayName: true, fplTeamName: true } },
+      },
+      orderBy: [{ gameweek: "desc" }, { createdAt: "desc" }],
+      take: 40,
+    });
+
+    const shaped = mine.map((c) => {
+      const iAsked = c.challengerId === me;
+      const them = iAsked ? c.opponent : c.challenger;
+      const myScore = iAsked ? c.challengerScore : c.opponentScore;
+      const theirScore = iAsked ? c.opponentScore : c.challengerScore;
+      return {
+        id: c.id,
+        gameweek: c.gameweek,
+        status: c.status,
+        iAsked,
+        /** Only the person who was asked may answer, and only while open. */
+        canRespond: !iAsked && c.status === "PENDING" && c.gameweek === win.gameweek && !win.locked,
+        them: who(them),
+        myScore,
+        theirScore,
+        result:
+          c.status !== "SETTLED" || myScore == null || theirScore == null
+            ? null
+            : myScore > theirScore ? "WON" : myScore < theirScore ? "LOST" : "DREW",
+      };
+    });
+
+    // Everybody else in the competition, minus anyone this gameweek already
+    // has a challenge with either way round.
+    const entries = await prisma.entry.findMany({
+      where: { leagueId: league.id, userId: { not: me } },
+      include: { user: { select: { id: true, displayName: true, fplTeamName: true } } },
+    });
+    const taken = new Set(
+      mine.filter((c) => c.gameweek === win.gameweek)
+        .map((c) => (c.challengerId === me ? c.opponentId : c.challengerId))
+    );
+
+    const candidates = await Promise.all(
+      entries
+        .filter((e) => !taken.has(e.userId))
+        .map(async (e) => ({
+          ...who(e.user),
+          record: await recordBetween(league.id, me, e.userId),
+        }))
+    );
+
+    res.json({
+      gameweek: win.gameweek,
+      deadline: win.deadline,
+      locked: win.locked,
+      challenges: shaped,
+      candidates: candidates.sort((a, b) => b.record.played - a.record.played),
+    });
+  } catch (e) { next(e); }
+});
+
+asideRouter.post("/challenge", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    const leagueId = String((req.body as any)?.leagueId || "");
+    const opponentId = String((req.body as any)?.opponentId || "");
+    const me = req.userId!;
+
+    if (!leagueId || !opponentId) {
+      return next(new AppError("Pick somebody to challenge.", 400));
+    }
+    if (opponentId === me) {
+      return next(new AppError("You cannot challenge yourself.", 400));
+    }
+
+    const league = await prisma.league.findUnique({ where: { id: leagueId } });
+    if (!league) return next(new AppError("League not found.", 404));
+    if (!ASIDE_FORMATS.includes(league.format)) {
+      return next(new AppError("This competition does not play one against one.", 400));
+    }
+
+    const win = await challengeWindow();
+    if (!win) return next(new AppError("No upcoming gameweek available.", 503));
+    if (win.locked) {
+      return next(new AppError(
+        "The deadline has passed. Challenges have to be agreed before it, or one of you would be picking with the other's team in front of them.",
+        400));
+    }
+
+    // Both of them have to actually be in this competition.
+    const both = await prisma.entry.findMany({
+      where: { leagueId, userId: { in: [me, opponentId] } },
+      select: { userId: true },
+    });
+    if (both.length !== 2) {
+      return next(new AppError("You can only challenge somebody in the same competition.", 400));
+    }
+
+    // One per pair per gameweek, whichever way round it was asked.
+    const existing = await prisma.asideChallenge.findFirst({
+      where: {
+        leagueId, gameweek: win.gameweek,
+        OR: [
+          { challengerId: me, opponentId },
+          { challengerId: opponentId, opponentId: me },
+        ],
+      },
+    });
+    if (existing) {
+      return next(new AppError("You already have one with them this gameweek.", 409));
+    }
+
+    const challenge = await prisma.asideChallenge.create({
+      data: { leagueId, gameweek: win.gameweek, challengerId: me, opponentId },
+    });
+
+    const asker = await prisma.user.findUnique({
+      where: { id: me },
+      select: { displayName: true, fplTeamName: true },
+    });
+    const askerName = asker?.fplTeamName || asker?.displayName || "Someone";
+
+    await prisma.notification.create({
+      data: {
+        userId: opponentId,
+        title: askerName + " has challenged you",
+        body:
+          askerName + " wants to play you head to head in " + league.name +
+          " for Gameweek " + win.gameweek + ". Your " + totalSlots(formationFor(league)) +
+          " against theirs. Accept before the deadline.",
+        type: "league_update",
+        metadata: { leagueId, challengeId: challenge.id } as any,
+      },
+    });
+
+    res.status(201).json({ ok: true, challenge: { id: challenge.id, status: challenge.status } });
+  } catch (e) { next(e); }
+});
+
+asideRouter.post("/challenge/:id/respond", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    const accept = (req.body as any)?.accept === true;
+    const me = req.userId!;
+
+    const challenge = await prisma.asideChallenge.findUnique({
+      where: { id: req.params.id },
+      include: { league: { select: { id: true, name: true, format: true } } },
+    });
+    if (!challenge) return next(new AppError("Challenge not found.", 404));
+
+    // Only the person who was asked gets to answer it.
+    if (challenge.opponentId !== me) {
+      return next(new AppError("That challenge is not yours to answer.", 403));
+    }
+    if (challenge.status !== "PENDING") {
+      return next(new AppError("That has already been answered.", 409));
+    }
+
+    const win = await challengeWindow();
+    if (!win || challenge.gameweek !== win.gameweek || win.locked) {
+      await prisma.asideChallenge.update({
+        where: { id: challenge.id },
+        data: { status: "VOID", respondedAt: new Date() },
+      });
+      return next(new AppError("Too late - that one was for a gameweek that has closed.", 400));
+    }
+
+    const updated = await prisma.asideChallenge.update({
+      where: { id: challenge.id },
+      data: { status: accept ? "ACCEPTED" : "DECLINED", respondedAt: new Date() },
+    });
+
+    if (accept) {
+      const them = await prisma.user.findUnique({
+        where: { id: me },
+        select: { displayName: true, fplTeamName: true },
+      });
+      const name = them?.fplTeamName || them?.displayName || "They";
+      await prisma.notification.create({
+        data: {
+          userId: challenge.challengerId,
+          title: name + " accepted",
+          body:
+            "You are on for Gameweek " + challenge.gameweek + " in " +
+            challenge.league.name + ". Pick your side before the deadline.",
+          type: "league_update",
+          metadata: { leagueId: challenge.leagueId, challengeId: challenge.id } as any,
+        },
+      });
+    }
+
+    res.json({ ok: true, status: updated.status });
+  } catch (e) { next(e); }
 });

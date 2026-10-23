@@ -206,4 +206,102 @@ export async function scoreAsidePicks() {
   }
 
   if (scored) console.log(`[aside] scored ${scored} selections for GW${gw}`);
+
+  // Results depend on both sides being scored, so this runs after, not inside,
+  // the loop above.
+  await settleAsideChallenges(gw);
+}
+
+/**
+ * Turn accepted challenges into results.
+ *
+ * A challenge only settles when both managers actually picked a side and both
+ * were scored. If either did not, it is voided rather than awarded: a win
+ * against somebody who forgot is not worth having, and if it counted the first
+ * thing anybody would do is challenge the dormant accounts every week.
+ *
+ * Written once, when the gameweek is scored. The alternative - working the
+ * result out whenever somebody opens the screen - means a result that can
+ * change underneath people if a score is ever corrected.
+ */
+export async function settleAsideChallenges(gw: number) {
+  const open = await prisma.asideChallenge.findMany({
+    where: { gameweek: gw, status: "ACCEPTED" },
+    include: { league: { select: { name: true } } },
+  });
+  if (!open.length) return;
+
+  let settled = 0;
+  let voided = 0;
+
+  for (const c of open) {
+    try {
+      const picks = await prisma.asidePick.findMany({
+        where: {
+          leagueId: c.leagueId,
+          gameweek: gw,
+          userId: { in: [c.challengerId, c.opponentId] },
+          scoredAt: { not: null },
+        },
+        select: { userId: true, score: true },
+      });
+
+      const a = picks.find((p) => p.userId === c.challengerId);
+      const b = picks.find((p) => p.userId === c.opponentId);
+
+      if (!a || !b) {
+        await prisma.asideChallenge.update({
+          where: { id: c.id },
+          data: { status: "VOID", settledAt: new Date() },
+        });
+        voided++;
+        continue;
+      }
+
+      await prisma.asideChallenge.update({
+        where: { id: c.id },
+        data: {
+          status: "SETTLED",
+          challengerScore: a.score,
+          opponentScore: b.score,
+          settledAt: new Date(),
+        },
+      });
+      settled++;
+
+      // One notification each, written from that manager's own side so neither
+      // has to work out which number was theirs.
+      const line = (mine: number, theirs: number) =>
+        mine > theirs
+          ? "You won " + mine + " - " + theirs + "."
+          : mine < theirs
+          ? "You lost " + mine + " - " + theirs + "."
+          : "It finished level, " + mine + " each.";
+
+      await prisma.notification.createMany({
+        data: [
+          {
+            userId: c.challengerId,
+            title: "Your head to head is in",
+            body: line(a.score, b.score) + " Gameweek " + gw + " in " + c.league.name + ".",
+            type: "league_update",
+            metadata: { leagueId: c.leagueId, challengeId: c.id } as any,
+          },
+          {
+            userId: c.opponentId,
+            title: "Your head to head is in",
+            body: line(b.score, a.score) + " Gameweek " + gw + " in " + c.league.name + ".",
+            type: "league_update",
+            metadata: { leagueId: c.leagueId, challengeId: c.id } as any,
+          },
+        ],
+      });
+    } catch (e) {
+      console.error(`[aside] settling challenge ${c.id} failed`, e);
+    }
+  }
+
+  if (settled || voided) {
+    console.log(`[aside] GW${gw}: settled ${settled} head to heads, voided ${voided}`);
+  }
 }
