@@ -6,6 +6,7 @@ import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { generateInviteCode } from "../utils/inviteCode";
 import { AppError } from "../utils/AppError";
+import { withRank } from "../utils/ranking";
 import { accessSummary } from "../services/leagueAccess";
 
 export const leaguesRouter = Router();
@@ -105,8 +106,11 @@ leaguesRouter.get("/:id", authenticate, async (req: AuthRequest, res, next) => {
     });
     if (!league) throw new AppError("League not found", 404);
 
-    const leaderboard = league.entries.map((e, i) => ({
-      rank: i + 1,
+    // Level on points means level in the table. Ranking by position in the
+    // array handed one of them the higher place on nothing but the order the
+    // database returned.
+    const leaderboard = withRank(league.entries, (e) => e.totalPoints).map((e) => ({
+      rank: e.rank,
       entryId: e.id,
       userId: e.userId,
       displayName: e.user.displayName,
@@ -114,7 +118,7 @@ leaguesRouter.get("/:id", authenticate, async (req: AuthRequest, res, next) => {
       avatarUrl: e.user.avatarUrl,
       totalPoints: e.totalPoints,
       previousRank: e.previousRank,
-      movement: e.previousRank ? e.previousRank - (i + 1) : 0,
+      movement: e.previousRank ? e.previousRank - e.rank : 0,
     }));
 
     // An imported competition carries its group's paywall state, so a client
@@ -259,7 +263,7 @@ leaguesRouter.get("/:id/gameweek/:gw", authenticate, async (_req, res, next) => 
       },
       orderBy: { points: "desc" },
     });
-    res.json(scores.map((s, i) => ({ rank: i + 1, ...s })));
+    res.json(withRank(scores, (x) => x.points).map((s) => ({ ...s })));
   } catch (e) { next(e); }
 });
 

@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import { authenticate, AuthRequest } from "../middleware/authenticate";
 import { AppError } from "../utils/AppError";
 import { fplService } from "../services/fpl";
+import { withRank } from "../utils/ranking";
 
 export const asideRouter = Router();
 
@@ -271,8 +272,8 @@ asideRouter.get("/leaderboard/:leagueId", authenticate, async (req: AuthRequest,
     res.json({
       gameweek,
       payingPlaces: league.payingPlaces,
-      standings: picks.map((p, i) => ({
-        rank: i + 1,
+      standings: withRank(picks, (p) => p.score).map((p) => ({
+        rank: p.rank,
         name: p.user.displayName,
         teamName: p.user.fplTeamName,
         score: p.score,

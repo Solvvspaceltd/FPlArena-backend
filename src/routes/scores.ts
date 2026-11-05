@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/prisma';
+import { withRank } from '../utils/ranking';
 
 export const scoresRouter = Router();
 
@@ -17,7 +18,7 @@ scoresRouter.get('/league/:leagueId/gameweek/:gw', async (req: Request, res: Res
       },
       orderBy: { points: 'desc' },
     });
-    res.json(scores.map((s, i) => ({ rank: i + 1, ...s })));
+    res.json(withRank(scores, (x) => x.points).map((s) => ({ ...s })));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch scores' });
   }
