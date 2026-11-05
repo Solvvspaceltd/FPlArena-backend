@@ -128,7 +128,8 @@ function buildMatch(me: Side, opp: Side, proj: Projections) {
       shared.push({ name: f.name, team: f.teamShort, xp: round1(f.next) });
       sharedBase += f.next;
     }
-    const row = { id, name: f.name, team: f.teamShort, fixture: fixtureLabel(f), captain: false, xp: 0 };
+    const row = { id, name: f.name, team: f.teamShort, pos: f.pos,
+      fixture: fixtureLabel(f), captain: false, xp: 0 };
     if (a > 0 && b === 0) mine.push({ ...row, captain: a > 1, xp: round1(f.next * a) });
     if (b > 0 && a === 0) theirs.push({ ...row, captain: b > 1, xp: round1(f.next * b) });
   }
@@ -141,10 +142,41 @@ function buildMatch(me: Side, opp: Side, proj: Projections) {
 
   let verdict = "";
   let detail = "";
-  const a = mine[0];
-  const b = theirs[0];
-  if (a && b) {
-    verdict = `Your match comes down to ${a.name} against ${b.name}.`;
+
+  /* The decider used to be each side's biggest differential, whatever they
+     played. That produced lines like "comes down to Mbeumo against De Cuyper"
+     - a forward against a defender - which tells a manager nothing, because
+     they were never choices against each other. You cannot own one instead of
+     the other; they occupy different slots.
+
+     A duel only means something between players who could have swapped. So
+     look for the position where both sides hold a differential and take the
+     biggest pair from it. Where no position has one on both sides there is no
+     duel to describe, and saying so plainly beats inventing one. */
+  const POS_WORD: Record<number, string> = {
+    1: "goalkeepers", 2: "defenders", 3: "midfielders", 4: "forwards",
+  };
+  const POS_PLACE: Record<number, string> = {
+    1: "in goal", 2: "at the back", 3: "in midfield", 4: "up front",
+  };
+
+  let a: any = null;
+  let b: any = null;
+  let duelPos = 0;
+  for (const pos of [1, 2, 3, 4]) {
+    const x = mine.find((p: any) => p.pos === pos);
+    const y = theirs.find((p: any) => p.pos === pos);
+    if (!x || !y) continue;
+    if (!a || x.xp + y.xp > a.xp + b.xp) { a = x; b = y; duelPos = pos; }
+  }
+
+  // Nothing matched up. Fall back to each side's best, and be honest that they
+  // are not alternatives to one another.
+  const mismatched = !a;
+  if (mismatched) { a = mine[0]; b = theirs[0]; }
+
+  if (a && b && !mismatched) {
+    verdict = `It comes down to the ${POS_WORD[duelPos]}: ${a.name} against ${b.name}.`;
     const rest = (meTotal - a.xp) - (themTotal - b.xp);
     if (rest >= 0) {
       detail = `Even if ${b.name} edges ${a.name}, the rest of your team is forecast to carry it.`;
@@ -152,6 +184,11 @@ function buildMatch(me: Side, opp: Side, proj: Projections) {
       const need = Math.ceil(-rest);
       detail = `${a.name} plays ${a.fixture}. If he outscores ${b.name} by ${need} or more, the match is yours.`;
     }
+  } else if (a && b) {
+    verdict = `Your edge is ${a.name} ${POS_PLACE[a.pos] || ""}. Theirs is ${b.name} ${POS_PLACE[b.pos] || ""}.`.replace(/\s+\./g, ".");
+    detail =
+      `Different parts of the pitch, so neither is a swap for the other. ` +
+      `Whichever of them has the bigger week decides it.`;
   } else if (a) {
     verdict = `${a.name} is your edge. They have nothing you do not.`;
     detail = "Everything they own, you own. Your differentials decide it.";
