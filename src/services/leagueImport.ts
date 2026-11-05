@@ -32,8 +32,9 @@ const SEASON = "2026/27";
 
 /**
  * The Clashd competition suite. Every imported group gets its own instance of
- * all of these, scored privately among that group — this is what the import fee
- * buys. Clashd's own public leagues are the shop window; these are the product.
+ * all of these, scored privately among that group. Importing is free - the fee
+ * was dropped so that a group can bring itself in without paying first.
+ * Analysis is what we charge for; the competitions are the reason to be here.
  */
 const SUITE: Array<{
   suffix: string;
@@ -125,7 +126,7 @@ export async function importMiniLeague(
   const currentGw = (await fplService.getCurrentGameweek()) || 1;
 
   // 4. Create the whole Clashd suite for this group. Nine competitions, scored
-  //    privately among these managers — this is what the import fee buys.
+  //    privately among these managers. Free to import - the fee was dropped.
   const created: Array<{ id: string; name: string; format: string }> = [];
   let primaryId = "";
 

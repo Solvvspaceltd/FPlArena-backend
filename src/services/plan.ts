@@ -202,8 +202,27 @@ function buildMatch(me: Side, opp: Side, proj: Projections) {
   const myCap = me.picks.find((p) => p.is_captain);
   const theirCap = opp.picks.find((p) => p.is_captain);
 
+  /* The app was pairing these itself - your best differential against their
+     best, by rank - which put a forward opposite a defender and called it a
+     duel. Pairing belongs here, where position is known, so there is one
+     answer rather than the screen inventing its own.
+
+     Within a position, best against best. A player with nobody opposite him
+     still appears, because "they have no forward you do not own" is itself
+     worth seeing. */
+  const duels: any[] = [];
+  for (const pos of [1, 2, 3, 4]) {
+    const xs = mine.filter((p: any) => p.pos === pos);
+    const ys = theirs.filter((p: any) => p.pos === pos);
+    // Two per position at most. Six defenders would otherwise fill the whole
+    // list and midfield would never be shown at all.
+    const n = Math.min(2, Math.max(xs.length, ys.length));
+    for (let i = 0; i < n; i++) duels.push([xs[i] || null, ys[i] || null]);
+  }
+
   return {
     opponent: opp.name,
+    duels: duels.slice(0, 6),
     me: round1(meTotal),
     them: round1(themTotal),
     winChance,

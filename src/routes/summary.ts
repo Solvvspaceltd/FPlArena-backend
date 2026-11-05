@@ -97,7 +97,8 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
       where: { userId },
       include: {
         league: {
-          select: { id: true, name: true, format: true, status: true, importedFromFplId: true },
+          select: { id: true, name: true, format: true, status: true,
+            importedFromFplId: true, importGroupId: true },
         },
         division: { select: { id: true, name: true } },
       },
@@ -166,7 +167,13 @@ summaryRouter.get("/", authenticate, async (req: AuthRequest, res, next) => {
         scoreDetail: shown.detail,
         leaguePoints: e.leaguePoints,
         division: e.division?.name || null,
-        imported: !!e.league.importedFromFplId,
+        /* An import creates nine competitions but only the first carries
+           importedFromFplId, which is unique by definition. The other eight
+           have importGroupId alone, so a flag built on the former was true for
+           one league in nine and the Home summary showed seventeen of a
+           manager's eighteen as Clashd's own. */
+        imported: !!e.league.importGroupId,
+        importGroupId: e.league.importGroupId,
         // Movement vs previous rank, for the arrow indicator on Home.
         rankDelta: (e as any).previousRank && (e as any).currentRank
           ? (e as any).previousRank - (e as any).currentRank
