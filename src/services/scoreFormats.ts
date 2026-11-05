@@ -65,6 +65,54 @@ function playedRange(history: any, startGw: number, endGw: number): number[] {
  * Captain points for one gameweek: the captain's own score multiplied by the
  * armband (2, or 3 with a triple captain chip).
  */
+/** element id -> element_type, fetched once per process. */
+let POSITION_OF: Record<number, number> | null = null;
+
+async function positionMap(): Promise<Record<number, number>> {
+  if (POSITION_OF) return POSITION_OF;
+  const players = await fplService.getPlayerMap();
+  const out: Record<number, number> = {};
+  for (const id of Object.keys(players)) {
+    out[Number(id)] = players[Number(id)].position;
+  }
+  POSITION_OF = out;
+  return out;
+}
+
+/**
+ * What one part of a manager's side earned them in a gameweek.
+ *
+ * Counts every player of that position who actually scored for the manager -
+ * which includes an automatic substitute who came on for somebody who did not
+ * play, because those points are genuinely theirs.
+ *
+ * Deliberately raw: the captain's multiplier is NOT applied. Captaincy already
+ * has its own competition, and if it counted here then Midfield Master would be
+ * decided by whether a manager happened to captain a midfielder rather than by
+ * how well they picked their midfield. These four are about building that part
+ * of a squad, nothing else.
+ */
+export async function positionPointsForGw(
+  ctx: ScoreContext,
+  teamId: number,
+  gw: number,
+  elementType: number
+): Promise<number> {
+  const picks = await getPicks(ctx, teamId, gw);
+  const list = picks?.picks || [];
+  if (!list.length) return 0;
+
+  const [live, pos] = await Promise.all([getLive(ctx, gw), positionMap()]);
+
+  let total = 0;
+  for (const p of list) {
+    if (!p.multiplier || p.multiplier <= 0) continue; // did not count this week
+    if (pos[p.element] !== elementType) continue;
+    total += live[p.element] ?? 0;
+  }
+  return total;
+}
+
 export async function captainPointsForGw(
   ctx: ScoreContext,
   teamId: number,
@@ -114,6 +162,31 @@ export async function scoreForFormat(
         .sort((a, b) => b.event - a.event)[0];
       if (!latest) return 0;
       return latest.points - (latest.event_transfers_cost || 0);
+    }
+
+    /**
+     * The four positional competitions. Same shape, different part of the
+     * pitch: add up what your keeper, defenders, midfielders or forwards
+     * earned you, every gameweek, all season.
+     *
+     * Golden Glove is one player where the others are three to five, so its
+     * numbers are far smaller and its table far tighter. That is the point of
+     * it - picking a keeper is a real skill that a combined points total
+     * completely hides.
+     */
+    case "GOLDEN_GLOVE":
+    case "PARKED_BUS":
+    case "MIDFIELD_MASTER":
+    case "ELECTRIC_ATTACKER": {
+      const TYPE: Record<string, number> = {
+        GOLDEN_GLOVE: 1, PARKED_BUS: 2, MIDFIELD_MASTER: 3, ELECTRIC_ATTACKER: 4,
+      };
+      const elementType = TYPE[format];
+      let total = 0;
+      for (const gw of gws) {
+        total += await positionPointsForGw(ctx, teamId, gw, elementType);
+      }
+      return total;
     }
 
     /** Most points scored by captains across the range. */

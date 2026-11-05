@@ -96,6 +96,16 @@ enum LeagueFormat {
   NO_HITS
   SEVEN_ASIDE
   FIVE_ASIDE
+
+  /// One competition per position, scored on what that part of your side
+  /// earned you across the season. Every manager fields a keeper, defenders,
+  /// midfielders and forwards, so nobody has to do anything differently - but
+  /// they are four separate contests, each rewarding a part of squad building
+  /// that a single points total buries.
+  GOLDEN_GLOVE
+  PARKED_BUS
+  MIDFIELD_MASTER
+  ELECTRIC_ATTACKER
 }
 
 model User {
