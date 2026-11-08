@@ -293,6 +293,14 @@ model GwScore {
   transfersMade Int      @default(0)
   pointsOnBench Int      @default(0)
   captainPoints Int      @default(0)
+  /// What each part of the side earned this gameweek, worked out once when the
+  /// gameweek is scored and never again. Null means not yet computed, which is
+  /// why these are nullable rather than defaulting to zero - a real zero and a
+  /// missing value mean very different things to a positional league table.
+  gkPoints      Int?
+  defPoints     Int?
+  midPoints     Int?
+  fwdPoints     Int?
   rankInLeague  Int?
   teamSnapshot  Json?
   syncedAt      DateTime @default(now())

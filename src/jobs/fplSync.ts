@@ -6,6 +6,8 @@ import {
   scoreForFormat,
   captainPointsForGw,
   rememberPicks,
+  rememberPositionTotals,
+  positionBreakdownForGw,
   pointsFromLive,
 } from "../services/scoreFormats";
 import { io } from "../index";
@@ -158,6 +160,9 @@ export async function syncScores(forGameweek?: number) {
 
   let primed = 0;
   let rejected = 0;
+  let fromColumns = 0;
+  const backfill: Array<{ teamId: number; gameweek: number }> = [];
+  const BACKFILL_LIMIT = 300;
   const BATCH = 50;
   for (let i = 0; i < managerIds.length; i += BATCH) {
     const batch = managerIds.slice(i, i + BATCH);
@@ -169,15 +174,44 @@ export async function syncScores(forGameweek?: number) {
       select: {
         gameweek: true,
         teamSnapshot: true,
+        gkPoints: true,
+        defPoints: true,
+        midPoints: true,
+        fwdPoints: true,
         entry: { select: { user: { select: { fplTeamId: true } } } },
       },
     });
 
     for (const row of rows) {
       const teamId = row.entry?.user?.fplTeamId;
+      if (!teamId) continue;
+      const key = `${teamId}:${row.gameweek}`;
+      if (ctx.subtotals.has(key) || ctx.picks.has(key)) continue;
+      if (!(await isSettled(row.gameweek))) continue;
+
+      // The cheapest case, and the one we want every gameweek to end up in:
+      // the four numbers are already on the row, so there is no squad to hold
+      // in memory, no arithmetic to redo and nothing to ask FPL.
+      if (
+        row.gkPoints !== null &&
+        row.defPoints !== null &&
+        row.midPoints !== null &&
+        row.fwdPoints !== null
+      ) {
+        rememberPositionTotals(ctx, teamId, row.gameweek, {
+          gk: row.gkPoints,
+          def: row.defPoints,
+          mid: row.midPoints,
+          fwd: row.fwdPoints,
+        });
+        fromColumns++;
+        continue;
+      }
+
+      // Scored before those columns existed. Fall back to the stored squad and
+      // queue the gameweek to have its numbers worked out once, below.
       const squad = row.teamSnapshot as any;
-      if (!teamId || !Array.isArray(squad) || !squad.length) continue;
-      if (ctx.picks.has(`${teamId}:${row.gameweek}`)) continue;
+      if (!Array.isArray(squad) || !squad.length) continue;
 
       // Fail safe rather than silently wrong. Positional scoring skips any
       // pick without a multiplier, so a snapshot that is not shaped like FPL's
@@ -190,12 +224,8 @@ export async function syncScores(forGameweek?: number) {
         continue;
       }
 
-      if (!(await isSettled(row.gameweek))) continue;
-
       // Keep only the three fields scoring reads. A full snapshot carries
-      // position and vice-captain flags nobody looks at here, and these sit in
-      // memory for every manager and every gameweek played - by May that is the
-      // difference between tens of megabytes and hundreds.
+      // position and vice-captain flags nobody looks at here.
       rememberPicks(
         ctx,
         teamId,
@@ -207,6 +237,9 @@ export async function syncScores(forGameweek?: number) {
         }))
       );
       primed++;
+      if (backfill.length < BACKFILL_LIMIT) {
+        backfill.push({ teamId, gameweek: row.gameweek });
+      }
     }
   }
 
@@ -247,6 +280,37 @@ export async function syncScores(forGameweek?: number) {
       }
     } catch {
       /* a shadow check must never affect a real pass */
+    }
+  }
+
+  // Work out the four numbers once for gameweeks scored before the columns
+  // existed, and write them to the row so no pass ever does it again. Capped
+  // per pass so the first run after a deploy cannot turn into a long job, and
+  // the rest simply fills in over the following passes.
+  let backfilled = 0;
+  let backfillError = "";
+  for (const job of backfill) {
+    try {
+      const parts = await positionBreakdownForGw(ctx, job.teamId, job.gameweek);
+      await prisma.gwScore.updateMany({
+        where: {
+          gameweek: job.gameweek,
+          entry: { user: { fplTeamId: job.teamId } },
+        },
+        data: {
+          gkPoints: parts.gk,
+          defPoints: parts.def,
+          midPoints: parts.mid,
+          fwdPoints: parts.fwd,
+        },
+      });
+      rememberPositionTotals(ctx, job.teamId, job.gameweek, parts);
+      backfilled++;
+    } catch (e: any) {
+      // A backfill is an optimisation and must never break a scoring pass -
+      // but it must not fail silently either, or the columns would stay empty
+      // for ever while every pass quietly went on doing the work by hand.
+      if (!backfillError) backfillError = e?.message || String(e);
     }
   }
 
@@ -333,9 +397,16 @@ export async function syncScores(forGameweek?: number) {
       // Captain Royale has history to read rather than starting from zero.
       try {
         const capPts = await captainPointsForGw(ctx, entry.user.fplTeamId, gw);
+        const parts = await positionBreakdownForGw(ctx, entry.user.fplTeamId, gw);
         await prisma.gwScore.update({
           where: { entryId_gameweek: { entryId: entry.id, gameweek: gw } },
-          data: { captainPoints: capPts },
+          data: {
+            captainPoints: capPts,
+            gkPoints: parts.gk,
+            defPoints: parts.def,
+            midPoints: parts.mid,
+            fwdPoints: parts.fwd,
+          },
         });
       } catch (e) {
         /* not worth failing the entry over */
@@ -365,7 +436,9 @@ export async function syncScores(forGameweek?: number) {
   console.log(
     `[Sync] GW${gw}: ${synced}/${entries.length} entries updated | ` +
     `${managerIds.length} managers | ${calls} FPL calls (${perManager} each) | ` +
-    `${primed} squads from cache | ${seconds}s` +
+    `${fromColumns} gameweeks from columns | ${primed} from squads | ` +
+    `${backfilled} backfilled | ${seconds}s` +
+    (backfillError ? ` | BACKFILL FAILED: ${backfillError}` : "") +
     (rejected ? ` | WARNING ${rejected} snapshots had an unexpected shape` : "")
   );
 

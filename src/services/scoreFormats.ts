@@ -12,9 +12,21 @@ import { fplService } from "./fpl";
  * aggressively, because the FPL API is unofficial and throttled.
  */
 
+/** What each part of a manager's side earned in one gameweek. */
+export type PositionTotals = { gk: number; def: number; mid: number; fwd: number };
+
 export type ScoreContext = {
   /** picks per manager per gameweek, keyed `${teamId}:${gw}` */
   picks: Map<string, any>;
+  /**
+   * Settled position subtotals, keyed `${teamId}:${gw}`.
+   *
+   * Once a gameweek is scored these four numbers never change, so they are
+   * stored on the gw_scores row and read back here. A manager with subtotals
+   * needs no squad in memory at all, which is what stops a pass growing by one
+   * squad per manager per gameweek as the season runs on.
+   */
+  subtotals: Map<string, PositionTotals>;
   /** live player points per gameweek */
   live: Map<number, Record<number, number>>;
   /** transfers per manager */
@@ -25,7 +37,14 @@ export type ScoreContext = {
 };
 
 export function newContext(sleep: (ms: number) => Promise<unknown>, delayMs = 250): ScoreContext {
-  return { picks: new Map(), live: new Map(), transfers: new Map(), sleep, delayMs };
+  return {
+    picks: new Map(),
+    subtotals: new Map(),
+    live: new Map(),
+    transfers: new Map(),
+    sleep,
+    delayMs,
+  };
 }
 
 /**
@@ -60,6 +79,16 @@ export function pointsFromLive(picks: any, live: Record<number, number>): number
  *
  * Only ever called with a gameweek FPL reports as data_checked - see the sync.
  */
+/** Hand the scorer subtotals already worked out and stored. */
+export function rememberPositionTotals(
+  ctx: ScoreContext,
+  teamId: number,
+  gw: number,
+  totals: PositionTotals
+) {
+  ctx.subtotals.set(`${teamId}:${gw}`, totals);
+}
+
 export function rememberPicks(
   ctx: ScoreContext,
   teamId: number,
@@ -139,19 +168,53 @@ export async function positionPointsForGw(
   gw: number,
   elementType: number
 ): Promise<number> {
+  const stored = ctx.subtotals.get(`${teamId}:${gw}`);
+  if (stored) {
+    if (elementType === 1) return stored.gk;
+    if (elementType === 2) return stored.def;
+    if (elementType === 3) return stored.mid;
+    return stored.fwd;
+  }
+
+  const all = await positionBreakdownForGw(ctx, teamId, gw);
+  if (elementType === 1) return all.gk;
+  if (elementType === 2) return all.def;
+  if (elementType === 3) return all.mid;
+  return all.fwd;
+}
+
+/**
+ * All four parts of a side in one pass over the squad.
+ *
+ * Working them out together rather than one position at a time is what makes
+ * them worth storing: the sync computes this once when it scores a gameweek,
+ * writes the four numbers to the gw_scores row, and no later pass ever has to
+ * look at that squad again.
+ */
+export async function positionBreakdownForGw(
+  ctx: ScoreContext,
+  teamId: number,
+  gw: number
+): Promise<PositionTotals> {
+  const empty: PositionTotals = { gk: 0, def: 0, mid: 0, fwd: 0 };
+
   const picks = await getPicks(ctx, teamId, gw);
   const list = picks?.picks || [];
-  if (!list.length) return 0;
+  if (!list.length) return empty;
 
   const [live, pos] = await Promise.all([getLive(ctx, gw), positionMap()]);
 
-  let total = 0;
+  const out: PositionTotals = { gk: 0, def: 0, mid: 0, fwd: 0 };
   for (const p of list) {
     if (!p.multiplier || p.multiplier <= 0) continue; // did not count this week
-    if (pos[p.element] !== elementType) continue;
-    total += live[p.element] ?? 0;
+    const points = live[p.element] ?? 0;
+    const type = pos[p.element];
+    if (type === 1) out.gk += points;
+    else if (type === 2) out.def += points;
+    else if (type === 3) out.mid += points;
+    else if (type === 4) out.fwd += points;
   }
-  return total;
+  return out;
 }
 
 export async function captainPointsForGw(

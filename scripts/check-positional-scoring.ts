@@ -9,6 +9,8 @@ import {
   positionPointsForGw,
   captainPointsForGw,
   pointsFromLive,
+  positionBreakdownForGw,
+  rememberPositionTotals,
 } from "../src/services/scoreFormats";
 
 // A real FPL picks array: 11 starters + 4 bench, one autosub already applied.
@@ -100,6 +102,24 @@ function check(name: string, got: unknown, want: unknown) {
   check("a player missing from the live list counts zero rather than breaking",
         pointsFromLive({ picks: [{ element: 999, multiplier: 1 }] }, POINTS), 0);
   check("an empty squad scores nothing", pointsFromLive({ picks: [] }, POINTS), 0);
+
+  console.log("\n-- stored subtotals must agree with recomputing them --");
+  const breakdown = await positionBreakdownForGw(live, 777, 7);
+  check("breakdown keeper", breakdown.gk, gkLive);
+  check("breakdown defence", breakdown.def, defLive);
+  check("breakdown midfield", breakdown.mid, midLive);
+  check("breakdown attack", breakdown.fwd, fwdLive);
+
+  // A context with the four numbers stored and NO squad available at all: if
+  // anything still reached for the picks it would have to go to FPL for them.
+  const stored = newContext(sleep, 0);
+  rememberPositionTotals(stored, 777, 7, breakdown);
+  const before = networkCalls;
+  check("stored keeper", await positionPointsForGw(stored, 777, 7, 1), gkLive);
+  check("stored defence", await positionPointsForGw(stored, 777, 7, 2), defLive);
+  check("stored midfield", await positionPointsForGw(stored, 777, 7, 3), midLive);
+  check("stored attack", await positionPointsForGw(stored, 777, 7, 4), fwdLive);
+  check("a stored gameweek needs no squad and no network", networkCalls - before, 0);
 
   console.log("\n-- and the primed path must not touch FPL for picks --");
   // One live-points call is expected (a different gameweek's context); picks must be zero.
