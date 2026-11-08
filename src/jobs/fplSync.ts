@@ -7,6 +7,7 @@ import {
   captainPointsForGw,
   rememberPicks,
   rememberPositionTotals,
+  rememberCaptainPoints,
   positionBreakdownForGw,
   pointsFromLive,
 } from "../services/scoreFormats";
@@ -178,6 +179,7 @@ export async function syncScores(forGameweek?: number) {
         defPoints: true,
         midPoints: true,
         fwdPoints: true,
+        captainPoints: true,
         entry: { select: { user: { select: { fplTeamId: true } } } },
       },
     });
@@ -204,6 +206,10 @@ export async function syncScores(forGameweek?: number) {
           mid: row.midPoints,
           fwd: row.fwdPoints,
         });
+        // Captain Royale walks the season too, so give it the stored figure as
+        // well. The four subtotals being present is what vouches for this row:
+        // they are only ever written together with a verified captain figure.
+        rememberCaptainPoints(ctx, teamId, row.gameweek, row.captainPoints);
         fromColumns++;
         continue;
       }
@@ -292,6 +298,11 @@ export async function syncScores(forGameweek?: number) {
   for (const job of backfill) {
     try {
       const parts = await positionBreakdownForGw(ctx, job.teamId, job.gameweek);
+      // Recompute the captain figure from the same squad rather than trusting
+      // whatever is on the row. That column defaults to zero, so a gameweek the
+      // sync missed while it was live - GW4 in September, for one - would be
+      // indistinguishable from a captain who genuinely blanked.
+      const capPts = await captainPointsForGw(ctx, job.teamId, job.gameweek);
       await prisma.gwScore.updateMany({
         where: {
           gameweek: job.gameweek,
@@ -302,9 +313,11 @@ export async function syncScores(forGameweek?: number) {
           defPoints: parts.def,
           midPoints: parts.mid,
           fwdPoints: parts.fwd,
+          captainPoints: capPts,
         },
       });
       rememberPositionTotals(ctx, job.teamId, job.gameweek, parts);
+      rememberCaptainPoints(ctx, job.teamId, job.gameweek, capPts);
       backfilled++;
     } catch (e: any) {
       // A backfill is an optimisation and must never break a scoring pass -

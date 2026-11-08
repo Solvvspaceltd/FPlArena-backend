@@ -11,6 +11,7 @@ import {
   pointsFromLive,
   positionBreakdownForGw,
   rememberPositionTotals,
+  rememberCaptainPoints,
 } from "../src/services/scoreFormats";
 
 // A real FPL picks array: 11 starters + 4 bench, one autosub already applied.
@@ -120,6 +121,13 @@ function check(name: string, got: unknown, want: unknown) {
   check("stored midfield", await positionPointsForGw(stored, 777, 7, 3), midLive);
   check("stored attack", await positionPointsForGw(stored, 777, 7, 4), fwdLive);
   check("a stored gameweek needs no squad and no network", networkCalls - before, 0);
+
+  // Captain Royale walks the season the same way, so it needs the same cache
+  // or it goes to FPL for every manager and every gameweek instead.
+  rememberCaptainPoints(stored, 777, 7, capLive);
+  const beforeCap = networkCalls;
+  check("stored captain", await captainPointsForGw(stored, 777, 7), capLive);
+  check("a stored captain needs no squad and no network", networkCalls - beforeCap, 0);
 
   console.log("\n-- and the primed path must not touch FPL for picks --");
   // One live-points call is expected (a different gameweek's context); picks must be zero.

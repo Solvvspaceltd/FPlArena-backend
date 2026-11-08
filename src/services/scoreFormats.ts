@@ -27,6 +27,12 @@ export type ScoreContext = {
    * squad per manager per gameweek as the season runs on.
    */
   subtotals: Map<string, PositionTotals>;
+  /**
+   * Settled captain points, keyed `${teamId}:${gw}`. Captain Royale walks the
+   * season exactly as the positional competitions do, so it needs the same
+   * treatment or it quietly becomes the most expensive league on the platform.
+   */
+  captains: Map<string, number>;
   /** live player points per gameweek */
   live: Map<number, Record<number, number>>;
   /** transfers per manager */
@@ -40,6 +46,7 @@ export function newContext(sleep: (ms: number) => Promise<unknown>, delayMs = 25
   return {
     picks: new Map(),
     subtotals: new Map(),
+    captains: new Map(),
     live: new Map(),
     transfers: new Map(),
     sleep,
@@ -79,6 +86,16 @@ export function pointsFromLive(picks: any, live: Record<number, number>): number
  *
  * Only ever called with a gameweek FPL reports as data_checked - see the sync.
  */
+/** Hand the scorer a captain figure already worked out and stored. */
+export function rememberCaptainPoints(
+  ctx: ScoreContext,
+  teamId: number,
+  gw: number,
+  points: number
+) {
+  ctx.captains.set(`${teamId}:${gw}`, points);
+}
+
 /** Hand the scorer subtotals already worked out and stored. */
 export function rememberPositionTotals(
   ctx: ScoreContext,
@@ -222,6 +239,9 @@ export async function captainPointsForGw(
   teamId: number,
   gw: number
 ): Promise<number> {
+  const stored = ctx.captains.get(`${teamId}:${gw}`);
+  if (stored !== undefined) return stored;
+
   const picks = await getPicks(ctx, teamId, gw);
   const list = picks?.picks || [];
   const captain = list.find((p: any) => p.is_captain) || list.find((p: any) => p.multiplier > 1);
