@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { prisma } from "../utils/prisma";
-import { fplService, fplCallCount } from "../services/fpl";
+import { fplService, fplCallCount, fplCallsByEndpoint, fplCallsSince } from "../services/fpl";
 import {
   newContext,
   scoreForFormat,
@@ -68,6 +68,7 @@ export async function activateDueLeagues(gw: number) {
 export async function syncScores(forGameweek?: number) {
   const startedAt = Date.now();
   const callsBefore = fplCallCount();
+  const endpointsBefore = fplCallsByEndpoint();
   const gw = forGameweek ?? (await fplService.getCurrentGameweek());
   if (!gw) return;
 
@@ -434,7 +435,7 @@ export async function syncScores(forGameweek?: number) {
     } catch (e) { console.error(`Entry ${entry.id} failed`, e); }
   }
 
-  await updateUserTotals(historyCache);
+  await updateUserTotals(historyCache, gw);
   await updateRankings();
   io.emit("scores:updated", { gameweek: gw, at: new Date().toISOString() });
 
@@ -455,6 +456,8 @@ export async function syncScores(forGameweek?: number) {
     (rejected ? ` | WARNING ${rejected} snapshots had an unexpected shape` : "")
   );
 
+  console.log(`[Sync] GW${gw} calls by endpoint: ${fplCallsSince(endpointsBefore)}`);
+
   if (shadowAgreed || shadowDiffered) {
     const total = shadowAgreed + shadowDiffered;
     console.log(
@@ -469,7 +472,16 @@ export async function syncScores(forGameweek?: number) {
  * the user, not from entries, so without this they stay on zero however well
  * the per-league scoring works.
  */
-async function updateUserTotals(historyCache: Map<number, any>) {
+/**
+ * Which gameweek we last refreshed team names in. A manager renames their team
+ * perhaps once a season, so asking FPL every half hour costs one call and a
+ * quarter-second per manager, for ever, to learn nothing. Once a gameweek is
+ * far more often than the thing it is watching for actually changes.
+ */
+let namesRefreshedForGw: number | null = null;
+
+async function updateUserTotals(historyCache: Map<number, any>, gw: number) {
+  const refreshNames = namesRefreshedForGw !== gw;
   const users = await prisma.user.findMany({
     where: { fplTeamId: { not: null } },
     select: { id: true, fplTeamId: true, fplTeamName: true },
@@ -479,19 +491,21 @@ async function updateUserTotals(historyCache: Map<number, any>) {
     try {
       // Refresh the stored team name. FPL keeps the same Manager ID when a
       // manager renames their team, so a name saved once at link time goes
-      // stale. Cheap fetch, and only writes when it has actually changed.
-      try {
-        const team = await fplService.getTeam(u.fplTeamId!);
-        const liveName = team?.name;
-        if (liveName && liveName !== u.fplTeamName) {
-          await prisma.user.update({
-            where: { id: u.id },
-            data: { fplTeamName: liveName },
-          });
+      // stale. Once a gameweek, not once every half hour.
+      if (refreshNames) {
+        try {
+          const team = await fplService.getTeam(u.fplTeamId!);
+          const liveName = team?.name;
+          if (liveName && liveName !== u.fplTeamName) {
+            await prisma.user.update({
+              where: { id: u.id },
+              data: { fplTeamName: liveName },
+            });
+          }
+          await sleep(250);
+        } catch (e) {
+          /* name refresh must not break totals */
         }
-        await sleep(250);
-      } catch (e) {
-        /* name refresh must not break totals */
       }
       let hist = historyCache.get(u.fplTeamId!);
       if (!hist) {
@@ -523,6 +537,10 @@ async function updateUserTotals(historyCache: Map<number, any>) {
       console.error(`User totals failed for ${u.id}`, e);
     }
   }
+
+  // Only once the loop has been all the way through, so a pass that died
+  // halfway tries the names again next time rather than skipping them.
+  if (refreshNames) namesRefreshedForGw = gw;
 
   const ranked = await prisma.user.findMany({
     where: { fplTeamId: { not: null } },

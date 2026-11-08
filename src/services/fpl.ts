@@ -20,13 +20,39 @@ const BOOTSTRAP_TTL_MS = 5 * 60 * 1000;
  * than guessing at it.
  */
 let fplCalls = 0;
+const fplByEndpoint = new Map<string, number>();
+
 api.interceptors.request.use((cfg) => {
   fplCalls++;
+  // Group by the shape of the path, not the path itself, so every manager's
+  // history folds into one line. Knowing the total is not much use on its own;
+  // knowing WHICH endpoint is being called once per manager is what tells us
+  // where the next ceiling is.
+  const shape = String(cfg.url || "?").replace(/\d+/g, "{n}");
+  fplByEndpoint.set(shape, (fplByEndpoint.get(shape) || 0) + 1);
   return cfg;
 });
 
 export function fplCallCount(): number {
   return fplCalls;
+}
+
+/** A copy of the per-endpoint tallies, for diffing across a scoring pass. */
+export function fplCallsByEndpoint(): Map<string, number> {
+  return new Map(fplByEndpoint);
+}
+
+/**
+ * What changed between two snapshots, busiest first, as a readable string.
+ */
+export function fplCallsSince(before: Map<string, number>): string {
+  const rows: Array<[string, number]> = [];
+  for (const [shape, now] of fplByEndpoint) {
+    const delta = now - (before.get(shape) || 0);
+    if (delta > 0) rows.push([shape, delta]);
+  }
+  rows.sort((a, b) => b[1] - a[1]);
+  return rows.map(([shape, n]) => `${shape} x${n}`).join(", ");
 }
 
 export const fplService = {
