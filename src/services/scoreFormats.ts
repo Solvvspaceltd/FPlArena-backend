@@ -115,6 +115,17 @@ export function rememberPicks(
   ctx.picks.set(`${teamId}:${gw}`, { picks });
 }
 
+/**
+ * The scorer's picks cache, opened up to the sync.
+ *
+ * The sync was keeping a second cache of its own, so the gameweek in play was
+ * fetched twice for every manager - once to read their score, once to work out
+ * their positions. One cache, one fetch.
+ */
+export async function picksFor(ctx: ScoreContext, teamId: number, gw: number) {
+  return getPicks(ctx, teamId, gw);
+}
+
 async function getPicks(ctx: ScoreContext, teamId: number, gw: number) {
   const key = `${teamId}:${gw}`;
   if (ctx.picks.has(key)) return ctx.picks.get(key);

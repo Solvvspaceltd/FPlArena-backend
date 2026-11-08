@@ -9,6 +9,7 @@ import {
   rememberPositionTotals,
   rememberCaptainPoints,
   positionBreakdownForGw,
+  picksFor,
   pointsFromLive,
 } from "../services/scoreFormats";
 import { io } from "../index";
@@ -65,6 +66,20 @@ export async function activateDueLeagues(gw: number) {
  * and FPL's historical picks and points do not change once a gameweek is over,
  * so running it again produces the same numbers.
  */
+/**
+ * Manager history, kept between passes.
+ *
+ * FPL does not add a gameweek to this endpoint until that gameweek is finished
+ * - the fallback further down this file relies on exactly that - so while a
+ * gameweek is in play the payload cannot change, and fetching it every half
+ * hour for every manager learns nothing at the price of one call each.
+ *
+ * Dropped whenever the gameweek changes, and also when the one in play becomes
+ * final, which is the moment its row appears and the old copy stops being true.
+ */
+let historyKey: string | null = null;
+const historyBetweenPasses = new Map<number, any>();
+
 export async function syncScores(forGameweek?: number) {
   const startedAt = Date.now();
   const callsBefore = fplCallCount();
@@ -110,7 +125,13 @@ export async function syncScores(forGameweek?: number) {
   // each fetched once per sync rather than once per entry.
   const ctx = newContext(sleep, 250);
 
-  const historyCache = new Map<number, any>();
+  const key = `${gw}:${(await fplService.isGwFinished(gw)) ? "final" : "live"}`;
+  if (historyKey !== key) {
+    historyBetweenPasses.clear();
+    historyKey = key;
+  }
+  const historyCache = historyBetweenPasses;
+
   async function history(teamId: number) {
     if (historyCache.has(teamId)) return historyCache.get(teamId);
     const h = await fplService.getHistory(teamId);
@@ -119,18 +140,12 @@ export async function syncScores(forGameweek?: number) {
     return h;
   }
 
-  // Picks are a property of a manager and a gameweek, not of an entry, and the
-  // gameweek is fixed for the whole pass - so a manager in thirteen
-  // competitions was fetching the same payload thirteen times, at 250ms each.
-  // That put the ceiling at roughly 400 managers before a pass outran the
-  // 30-minute cron. One fetch per manager puts it past 5,000.
-  const picksCache = new Map<number, any>();
+  // Picks are a property of a manager and a gameweek, not of an entry, so a
+  // manager in thirteen competitions must only ever be fetched once. This now
+  // goes through the scorer's own cache rather than a second one beside it -
+  // keeping two meant the gameweek in play was fetched twice for everybody.
   async function gwPicks(teamId: number) {
-    if (picksCache.has(teamId)) return picksCache.get(teamId);
-    const p = await fplService.getGwPicks(teamId, gw);
-    picksCache.set(teamId, p);
-    await sleep(250);
-    return p;
+    return picksFor(ctx, teamId, gw);
   }
 
   // Load every settled gameweek's squad out of our own database instead of
