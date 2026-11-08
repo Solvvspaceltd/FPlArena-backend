@@ -13,6 +13,22 @@ let fixturesCache: { data: any; at: number } | null = null;
 const FIXTURES_TTL_MS = 1000 * 60 * 60 * 6;
 const BOOTSTRAP_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Every request to FPL goes through the axios instance above, so counting here
+ * counts all of them and no caller can forget to. The sync logs the delta at
+ * the end of each pass, which is how we know what the real ceiling is rather
+ * than guessing at it.
+ */
+let fplCalls = 0;
+api.interceptors.request.use((cfg) => {
+  fplCalls++;
+  return cfg;
+});
+
+export function fplCallCount(): number {
+  return fplCalls;
+}
+
 export const fplService = {
   async getTeam(teamId: number) {
     try {

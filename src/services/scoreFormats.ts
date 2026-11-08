@@ -28,6 +28,27 @@ export function newContext(sleep: (ms: number) => Promise<unknown>, delayMs = 25
   return { picks: new Map(), live: new Map(), transfers: new Map(), sleep, delayMs };
 }
 
+/**
+ * Put a manager's picks for a gameweek into the context without going to FPL.
+ *
+ * A finished gameweek cannot change: once the final match is played and the
+ * bonus is applied, who was in the side and what their multiplier was are
+ * settled forever. We already wrote that squad to gw_scores.teamSnapshot the
+ * first time we scored it, so the sync loads it from our own database and
+ * primes it here. Everything downstream then reads it out of this same cache
+ * and never notices the difference.
+ *
+ * Only ever called with a gameweek FPL reports as data_checked - see the sync.
+ */
+export function rememberPicks(
+  ctx: ScoreContext,
+  teamId: number,
+  gw: number,
+  picks: any[]
+) {
+  ctx.picks.set(`${teamId}:${gw}`, { picks });
+}
+
 async function getPicks(ctx: ScoreContext, teamId: number, gw: number) {
   const key = `${teamId}:${gw}`;
   if (ctx.picks.has(key)) return ctx.picks.get(key);

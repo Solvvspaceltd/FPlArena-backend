@@ -1,7 +1,12 @@
 import cron from "node-cron";
 import { prisma } from "../utils/prisma";
-import { fplService } from "../services/fpl";
-import { newContext, scoreForFormat, captainPointsForGw } from "../services/scoreFormats";
+import { fplService, fplCallCount } from "../services/fpl";
+import {
+  newContext,
+  scoreForFormat,
+  captainPointsForGw,
+  rememberPicks,
+} from "../services/scoreFormats";
 import { io } from "../index";
 import { enforceAccess } from "../services/leagueAccess";
 
@@ -57,6 +62,8 @@ export async function activateDueLeagues(gw: number) {
  * so running it again produces the same numbers.
  */
 export async function syncScores(forGameweek?: number) {
+  const startedAt = Date.now();
+  const callsBefore = fplCallCount();
   const gw = forGameweek ?? (await fplService.getCurrentGameweek());
   if (!gw) return;
 
@@ -107,12 +114,106 @@ export async function syncScores(forGameweek?: number) {
     return h;
   }
 
+  // Picks are a property of a manager and a gameweek, not of an entry, and the
+  // gameweek is fixed for the whole pass - so a manager in thirteen
+  // competitions was fetching the same payload thirteen times, at 250ms each.
+  // That put the ceiling at roughly 400 managers before a pass outran the
+  // 30-minute cron. One fetch per manager puts it past 5,000.
+  const picksCache = new Map<number, any>();
+  async function gwPicks(teamId: number) {
+    if (picksCache.has(teamId)) return picksCache.get(teamId);
+    const p = await fplService.getGwPicks(teamId, gw);
+    picksCache.set(teamId, p);
+    await sleep(250);
+    return p;
+  }
+
+  // Load every settled gameweek's squad out of our own database instead of
+  // asking FPL for it again.
+  //
+  // The positional competitions and Captain Royale score by walking the season,
+  // so each manager cost one FPL call per gameweek played, on every pass, every
+  // thirty minutes - for gameweeks that finished weeks ago and can never
+  // change. That, not the database or the host, is what caps how many managers
+  // Clashd can carry, and it tightens by one call per manager every week.
+  //
+  // We already stored each squad in gw_scores.teamSnapshot the first time we
+  // scored it. A gameweek FPL reports as data_checked is final - bonus applied,
+  // automatic substitutions made - so that snapshot is the truth and nothing is
+  // gained by fetching it twice.
+  //
+  // Done in batches so the rows never all sit in memory at once: a manager in
+  // thirteen competitions has thirteen identical snapshots per gameweek, and
+  // the first one primes the cache for the rest.
+  const managerIds = Array.from(
+    new Set(entries.map((e) => e.user.fplTeamId).filter(Boolean))
+  ) as number[];
+
+  const settled = new Map<number, boolean>();
+  async function isSettled(g: number): Promise<boolean> {
+    if (!settled.has(g)) settled.set(g, await fplService.isGwFinished(g));
+    return settled.get(g)!;
+  }
+
+  let primed = 0;
+  let rejected = 0;
+  const BATCH = 50;
+  for (let i = 0; i < managerIds.length; i += BATCH) {
+    const batch = managerIds.slice(i, i + BATCH);
+    const rows = await prisma.gwScore.findMany({
+      where: {
+        gameweek: { lt: gw },
+        entry: { user: { fplTeamId: { in: batch } } },
+      },
+      select: {
+        gameweek: true,
+        teamSnapshot: true,
+        entry: { select: { user: { select: { fplTeamId: true } } } },
+      },
+    });
+
+    for (const row of rows) {
+      const teamId = row.entry?.user?.fplTeamId;
+      const squad = row.teamSnapshot as any;
+      if (!teamId || !Array.isArray(squad) || !squad.length) continue;
+      if (ctx.picks.has(`${teamId}:${row.gameweek}`)) continue;
+
+      // Fail safe rather than silently wrong. Positional scoring skips any
+      // pick without a multiplier, so a snapshot that is not shaped like FPL's
+      // picks array would quietly score every manager zero instead of raising
+      // anything. If it does not look right, leave it alone and let FPL serve
+      // that gameweek exactly as it did before.
+      const first = squad[0];
+      if (!first || first.element === undefined || first.multiplier === undefined) {
+        rejected++;
+        continue;
+      }
+
+      if (!(await isSettled(row.gameweek))) continue;
+
+      // Keep only the three fields scoring reads. A full snapshot carries
+      // position and vice-captain flags nobody looks at here, and these sit in
+      // memory for every manager and every gameweek played - by May that is the
+      // difference between tens of megabytes and hundreds.
+      rememberPicks(
+        ctx,
+        teamId,
+        row.gameweek,
+        squad.map((pick: any) => ({
+          element: pick.element,
+          multiplier: pick.multiplier,
+          is_captain: pick.is_captain,
+        }))
+      );
+      primed++;
+    }
+  }
+
   let synced = 0;
   for (const entry of entries) {
     if (!entry.user.fplTeamId) continue;
     try {
-      const picks = await fplService.getGwPicks(entry.user.fplTeamId, gw);
-      await sleep(250);
+      const picks = await gwPicks(entry.user.fplTeamId);
       if (!picks || !picks.entry_history) continue;
 
       const net = picks.entry_history.points - picks.entry_history.event_transfers_cost;
@@ -213,7 +314,17 @@ export async function syncScores(forGameweek?: number) {
   await prisma.fplSync.create({
     data: { gameweek: gw, status: "success", recordsUpdated: synced },
   });
-  console.log(`[Sync] GW${gw}: ${synced}/${entries.length} entries updated`);
+  // What a pass actually costs. The FPL call count is the number that decides
+  // how many managers Clashd can carry, so it is logged rather than estimated.
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
+  const calls = fplCallCount() - callsBefore;
+  const perManager = managerIds.length ? (calls / managerIds.length).toFixed(1) : "0";
+  console.log(
+    `[Sync] GW${gw}: ${synced}/${entries.length} entries updated | ` +
+    `${managerIds.length} managers | ${calls} FPL calls (${perManager} each) | ` +
+    `${primed} squads from cache | ${seconds}s` +
+    (rejected ? ` | WARNING ${rejected} snapshots had an unexpected shape` : "")
+  );
 }
 
 /**
