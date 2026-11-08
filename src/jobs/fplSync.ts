@@ -6,6 +6,7 @@ import {
   scoreForFormat,
   captainPointsForGw,
   rememberPicks,
+  pointsFromLive,
 } from "../services/scoreFormats";
 import { io } from "../index";
 import { enforceAccess } from "../services/leagueAccess";
@@ -209,6 +210,46 @@ export async function syncScores(forGameweek?: number) {
     }
   }
 
+  // Shadow check for bulk scoring. Changes nothing.
+  //
+  // The way past the next ceiling is to stop asking FPL for each manager's
+  // score and work it out ourselves: one call returns every player's points,
+  // and we already know who was in each squad. bulkSync.ts has done this since
+  // September and has never been switched on, because nobody has ever checked
+  // that its answer matches the one FPL gives us.
+  //
+  // So compute it alongside the real figure and log where the two disagree.
+  // Whatever we learn here decides whether the bulk path can be trusted, and
+  // the disagreements will name the reason - most likely provisional bonus
+  // during a match, or automatic substitutions applied after it.
+  let shadowLive: Record<number, number> | null = null;
+  const shadowSeen = new Set<number>();
+  let shadowAgreed = 0;
+  let shadowDiffered = 0;
+  const shadowExamples: string[] = [];
+
+  async function shadowCheck(teamId: number, picks: any, actual: number) {
+    if (shadowSeen.has(teamId)) return;
+    shadowSeen.add(teamId);
+    try {
+      if (!shadowLive) shadowLive = await fplService.getLiveGwPoints(gw);
+      if (!shadowLive || !Object.keys(shadowLive).length) return;
+
+      const computed = pointsFromLive(picks, shadowLive);
+
+      if (computed === actual) {
+        shadowAgreed++;
+      } else {
+        shadowDiffered++;
+        if (shadowExamples.length < 3) {
+          shadowExamples.push(`team ${teamId}: computed ${computed}, FPL ${actual}`);
+        }
+      }
+    } catch {
+      /* a shadow check must never affect a real pass */
+    }
+  }
+
   let synced = 0;
   for (const entry of entries) {
     if (!entry.user.fplTeamId) continue;
@@ -217,6 +258,8 @@ export async function syncScores(forGameweek?: number) {
       if (!picks || !picks.entry_history) continue;
 
       const net = picks.entry_history.points - picks.entry_history.event_transfers_cost;
+
+      await shadowCheck(entry.user.fplTeamId, picks, net);
 
       await prisma.gwScore.upsert({
         where: { entryId_gameweek: { entryId: entry.id, gameweek: gw } },
@@ -325,6 +368,14 @@ export async function syncScores(forGameweek?: number) {
     `${primed} squads from cache | ${seconds}s` +
     (rejected ? ` | WARNING ${rejected} snapshots had an unexpected shape` : "")
   );
+
+  if (shadowAgreed || shadowDiffered) {
+    const total = shadowAgreed + shadowDiffered;
+    console.log(
+      `[Shadow] bulk scoring agreed with FPL on ${shadowAgreed}/${total} managers` +
+      (shadowExamples.length ? ` | ${shadowExamples.join(" | ")}` : "")
+    );
+  }
 }
 
 /**

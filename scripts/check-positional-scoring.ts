@@ -8,6 +8,7 @@ import {
   rememberPicks,
   positionPointsForGw,
   captainPointsForGw,
+  pointsFromLive,
 } from "../src/services/scoreFormats";
 
 // A real FPL picks array: 11 starters + 4 bench, one autosub already applied.
@@ -87,6 +88,18 @@ function check(name: string, got: unknown, want: unknown) {
   check("a benched player who did not play scores nothing",
         midLive === 13 + 3 + 8 + 4 && !String(midLive).includes("9"), true);
   check("Captain Royale does apply the armband", capLive, 13 * 2);
+
+  console.log("\n-- scoring a gameweek from the shared live list, with no per-manager call --");
+  // 11 who counted: 6+2+6+1+13(x2 captain)+3+8+2+11+4 = 56, less a 4-point hit.
+  const squadWithHit = { picks: SQUAD, entry_history: { event_transfers_cost: 4 } };
+  check("the armband is doubled, the unused bench ignored, the hit taken off",
+        pointsFromLive(squadWithHit, POINTS), 6 + 2 + 6 + 1 + 26 + 3 + 8 + 2 + 11 + 4 - 4);
+  check("no hit, no deduction",
+        pointsFromLive({ picks: SQUAD, entry_history: { event_transfers_cost: 0 } }, POINTS),
+        6 + 2 + 6 + 1 + 26 + 3 + 8 + 2 + 11 + 4);
+  check("a player missing from the live list counts zero rather than breaking",
+        pointsFromLive({ picks: [{ element: 999, multiplier: 1 }] }, POINTS), 0);
+  check("an empty squad scores nothing", pointsFromLive({ picks: [] }, POINTS), 0);
 
   console.log("\n-- and the primed path must not touch FPL for picks --");
   // One live-points call is expected (a different gameweek's context); picks must be zero.

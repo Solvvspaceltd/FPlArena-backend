@@ -29,6 +29,26 @@ export function newContext(sleep: (ms: number) => Promise<unknown>, delayMs = 25
 }
 
 /**
+ * A manager's gameweek score, worked out from their squad and one shared list
+ * of every player's points - no per-manager call to FPL at all.
+ *
+ * This is the whole basis of scoring Clashd at scale: FPL's live endpoint
+ * returns every player in one request, and we already know who was in each
+ * side, so the arithmetic is ours to do. Counts a player only if their
+ * multiplier is above zero, which excludes an unused bench and includes an
+ * automatic substitute, and applies the armband through that same multiplier.
+ * Transfer hits come off the total, exactly as FPL reports them.
+ */
+export function pointsFromLive(picks: any, live: Record<number, number>): number {
+  let total = 0;
+  for (const pick of picks?.picks || []) {
+    if (!pick.multiplier || pick.multiplier <= 0) continue;
+    total += (live[pick.element] ?? 0) * pick.multiplier;
+  }
+  return total - (picks?.entry_history?.event_transfers_cost || 0);
+}
+
+/**
  * Put a manager's picks for a gameweek into the context without going to FPL.
  *
  * A finished gameweek cannot change: once the final match is played and the
