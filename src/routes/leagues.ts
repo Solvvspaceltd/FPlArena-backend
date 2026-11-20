@@ -23,7 +23,10 @@ export const leaguesRouter = Router();
  * Clashd leagues is one person, and the figure that matters is how many people
  * we are on the hook for.
  */
-const CLASHD_PLAYER_CAP = parseInt(process.env.CLASHD_PLAYER_CAP || "1000", 10);
+// 2000 for the first season. The number the sync can actually serve is what
+// should move this, not ambition: watch the calls-per-manager figure in the
+// pass log before raising it again.
+const CLASHD_PLAYER_CAP = parseInt(process.env.CLASHD_PLAYER_CAP || "2000", 10);
 
 /** Distinct managers currently in any Clashd-run competition. */
 async function clashdPlayerCount(): Promise<number> {
