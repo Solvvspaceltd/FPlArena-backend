@@ -87,23 +87,29 @@ export function isClubProduct(productId?: string | null) {
 
 /* ── the answer ─────────────────────────────────────────────────────── */
 
-export async function getEntitlement(userId: string): Promise<Entitlement> {
-  if (freePreview()) {
-    return { ...NONE, pro: true, source: "PREVIEW" };
-  }
+/** The fields the rule below reads. Nothing else about a user matters to it. */
+export type ProFields = {
+  proUntil: Date | null;
+  proSource: string;
+  proProductId: string | null;
+  proWillRenew: boolean;
+  trialEndsAt: Date | null;
+  comped: boolean;
+};
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      proUntil: true, proSource: true, proProductId: true, proWillRenew: true,
-      trialEndsAt: true,
-    },
-  });
-  if (!user) return { ...NONE };
-
-  const now = new Date();
-
-  // A subscription or a comp still in date wins: it is this manager's own.
+/**
+ * Does this account hold Analysis, and on what grounds?
+ *
+ * Deliberately free of the database so the rule can be read in one place and
+ * tested on its own - see scripts/check-entitlements.ts. Returns null when
+ * none of these grounds apply, which is the caller's cue to look for a Club
+ * pass before reporting nothing.
+ *
+ * Order matters. A live subscription is reported ahead of a comp so that an
+ * account which is both is described truthfully as paying.
+ */
+export function decideEntitlement(user: ProFields, now: Date): Entitlement | null {
+  // A subscription still in date wins: it is this manager's own.
   if (user.proUntil && user.proUntil > now && user.proSource !== "NONE" && user.proSource !== "CLUB") {
     return {
       pro: true,
@@ -114,7 +120,13 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
       club: null,
     };
   }
-  if (user.proSource === "COMP" && !user.proUntil) {
+
+  // A comp. This used to be stored as proSource alone, which a purchase
+  // overwrote and a lapsed purchase then set to NONE - quietly destroying the
+  // comp and putting a comped tester behind the paywall. The second half of
+  // this test keeps the comps granted before that was fixed working, and can
+  // come out once they have all been migrated across.
+  if (user.comped || (user.proSource === "COMP" && !user.proUntil)) {
     return { ...NONE, pro: true, source: "COMP" };
   }
 
@@ -125,6 +137,27 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
   if (user.trialEndsAt && user.trialEndsAt > now) {
     return { ...NONE, pro: true, source: "TRIAL", until: user.trialEndsAt };
   }
+
+  return null;
+}
+
+export async function getEntitlement(userId: string): Promise<Entitlement> {
+  if (freePreview()) {
+    return { ...NONE, pro: true, source: "PREVIEW" };
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      proUntil: true, proSource: true, proProductId: true, proWillRenew: true,
+      trialEndsAt: true, comped: true,
+    },
+  });
+  if (!user) return { ...NONE };
+
+  const now = new Date();
+  const held = decideEntitlement(user, now);
+  if (held) return held;
 
   // A Club pass does not grant Analysis. It is reported here only so the app
   // can tell somebody which of their leagues is paid for and until when.

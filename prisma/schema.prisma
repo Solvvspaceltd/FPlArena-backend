@@ -141,6 +141,14 @@ model User {
   proProductId  String?
   proWillRenew  Boolean   @default(false)
 
+  /// A comp granted by an admin, kept deliberately apart from proSource.
+  /// Buying a subscription overwrote proSource, and a lapsed purchase then set
+  /// it to NONE - which silently destroyed the comp underneath and put a
+  /// comped tester behind the paywall. Nothing in the billing webhook touches
+  /// this field, so a purchase and a comp can coexist and neither erases the
+  /// other.
+  comped        Boolean   @default(false)
+
   // Account standing. Written only by the admin routes, read on every
   // authenticated request through services/accountStatus.ts.
   status         UserStatus @default(ACTIVE)

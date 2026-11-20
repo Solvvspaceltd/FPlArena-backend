@@ -391,9 +391,11 @@ billingRouter.post("/comp", authenticate, requireAdmin, async (req: AuthRequest,
     await prisma.user.update({
       where: { id: body.userId },
       data: body.grant
-        ? { proSource: "COMP" as any, proUntil: body.until ? new Date(body.until) : null,
+        ? { comped: true,
+            proSource: "COMP" as any, proUntil: body.until ? new Date(body.until) : null,
             proProductId: null, proWillRenew: false }
-        : { proSource: "NONE" as any, proUntil: null, proProductId: null, proWillRenew: false,
+        : { comped: false,
+            proSource: "NONE" as any, proUntil: null, proProductId: null, proWillRenew: false,
             trialEndsAt: new Date(0) },
     });
     res.json({ ok: true, entitlement: await getEntitlement(body.userId) });
